@@ -5,3 +5,8 @@ config.yml
 /wix
 *.log
 .env
+
+# Build artifacts
+*.exe
+src/**/*.js
+src/**/*.js.map
