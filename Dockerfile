@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:24-alpine
 
 ARG VERSION
 LABEL version="SMTP2Graph v${VERSION}"
@@ -15,4 +15,5 @@ RUN chmod +x /bin/test.sh
 WORKDIR /data
 VOLUME /data
 EXPOSE 587
+EXPOSE 8080
 ENTRYPOINT startup.sh

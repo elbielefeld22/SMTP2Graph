@@ -17,7 +17,14 @@ module.exports = (env, argv) => ({
                 test: /\.ts$/,
                 loader: 'ts-loader'
             },
+            {
+                test: /\.html$/,
+                type: 'asset/source',
+            },
         ],
+    },
+    externals: {
+        'node:sqlite': 'commonjs node:sqlite',
     },
     resolve: {
         extensions: ['.ts', '.js'],
@@ -41,4 +48,4 @@ module.exports = (env, argv) => ({
         entrypoints: false,
         warnings: false,
     },
-});
+});

@@ -6,6 +6,8 @@ import { Mailer } from './Mailer';
 import { prefixedLog } from './Logger';
 import { Config } from './Config';
 import { UnrecoverableError } from './Constants';
+import { Archive, IReceiveMeta } from './Archive';
+import { Notifier } from './Notifier';
 
 const log = prefixedLog('MailQueue');
 
@@ -17,6 +19,7 @@ export class MailQueue
     #tempPath: string;
     #queuePath: string;
     #failedPath: string;
+    #archivePath: string;
     #watcher: chokidar.FSWatcher|undefined;
     /** Remember mails to retry. Key = filename */
     #retryQueue = new Map<string, {retryAfter: Date, retryCount: number}>();
@@ -35,7 +38,9 @@ export class MailQueue
         this.#tempPath = path.join(rootPath, 'temp');
         this.#queuePath = path.join(rootPath, 'queue');
         this.#failedPath = path.join(rootPath, 'failed');
+        this.#archivePath = path.join(rootPath, 'archive');
         this.#ensureFolderStructure();
+        Archive.init(rootPath);
         this.#startWatcher();
     }
 
@@ -59,40 +64,76 @@ export class MailQueue
     {
         const filename = path.basename(filePath);
         log('verbose', `File "${filename}" appeared in the queue`);
-        
+
+        await Archive.ensureRecord(filePath);
+        Archive.markAttempt(filename);
+
         try {
-            await Mailer.sendEml(filePath);
-            this.remove(filePath);
+            const sender = await Mailer.sendEml(filePath);
+            await this.#onSent(filePath, sender);
             this.#removeFromRetryQueue(filename);
         } catch(error) {
             log('error', `Failed to send message "${filename}"`, {error, filename});
-            if(!(error instanceof UnrecoverableError))
-                this.#addToRetryQueue(filename);
+            const errorMsg = (error instanceof Error)?error.message:String(error);
+
+            if(error instanceof UnrecoverableError || !Config.sendRetryLimit) // Retrying makes no sense or is disabled
+                this.#moveToFailed(filename, errorMsg);
+            else
+                this.#addToRetryQueue(filename, errorMsg);
         }
     }
 
-    #addToRetryQueue(filename: string)
+    /** Archive or delete a successfully sent mail */
+    async #onSent(filePath: string, sender: string|undefined)
     {
-        if(Config.sendRetryLimit) // Retrying is enabled?
-        {
-            const data = this.#retryQueue.get(filename);
-            if(data && data.retryCount >= Config.sendRetryLimit) // This file is already in the queue and exceeded the retry limit?
-            {
-                try {
-                    this.#retryQueue.delete(filename); // Remove from queue
-                    fs.renameSync(path.join(this.#queuePath, filename), path.join(this.#failedPath, filename)); // Move to failed dir
-                } catch(error) {
-                    log('error', `Error moving file "${filename}" from queue to failed dir`, {error, filename});
-                }
-            }
-            else // This file should be retried
-            {
-                const retryAfter = new Date();
-                retryAfter.setMinutes(retryAfter.getMinutes()+Config.sendRetryInterval);
-                this.#retryQueue.set(filename, {retryAfter, retryCount: (data?.retryCount || 0)+1});
-            }
+        const filename = path.basename(filePath);
 
-            // Start/stop the queue if necessary
+        if(Archive.enabled && Config.archiveStoreContent)
+        {
+            try {
+                await renameWithRetry(filePath, path.join(this.#archivePath, filename));
+                Archive.markSent(filename, sender, 'archive');
+                return;
+            } catch(error) {
+                log('error', `Error moving "${filename}" to the archive`, {error, filename});
+            }
+        }
+
+        // Never leave a sent mail in the queue, it would be sent again after a restart
+        this.remove(filePath);
+        Archive.markSent(filename, sender, 'deleted');
+    }
+
+    #moveToFailed(filename: string, errorMsg: string)
+    {
+        this.#retryQueue.delete(filename);
+        this.#startStopRetryQueue();
+
+        renameWithRetry(path.join(this.#queuePath, filename), path.join(this.#failedPath, filename))
+            .then(()=>'failed' as const)
+            .catch(error=>{
+                log('error', `Error moving file "${filename}" from queue to failed dir`, {error, filename});
+                return 'queue' as const;
+            })
+            .then(location=>{
+                Archive.markFailed(filename, errorMsg, location);
+                Notifier.mailFailed(filename, errorMsg);
+            });
+    }
+
+    #addToRetryQueue(filename: string, errorMsg: string)
+    {
+        const data = this.#retryQueue.get(filename);
+        if(data && data.retryCount >= Config.sendRetryLimit) // This file is already in the queue and exceeded the retry limit?
+            this.#moveToFailed(filename, errorMsg);
+        else // This file should be retried
+        {
+            const retryAfter = new Date();
+            retryAfter.setMinutes(retryAfter.getMinutes()+Config.sendRetryInterval);
+            this.#retryQueue.set(filename, {retryAfter, retryCount: (data?.retryCount || 0)+1});
+            Archive.markRetrying(filename, errorMsg);
+
+            // Start the queue if necessary
             this.#startStopRetryQueue();
         }
     }
@@ -132,7 +173,19 @@ export class MailQueue
         });
     }
 
-    add(filePath: string)
+    /**
+     * Move a received mail from the temp folder into the queue
+     * @param meta Information about the SMTP session, stored in the archive
+     */
+    add(filePath: string, meta?: IReceiveMeta)
+    {
+        // Record the mail before it becomes visible in the queue, so the sender finds the metadata
+        Archive.recordReceived(filePath, meta)
+            .catch(error=>log('error', `Failed to archive metadata of "${path.basename(filePath)}"`, {error}))
+            .finally(()=>this.#moveToQueue(filePath));
+    }
+
+    #moveToQueue(filePath: string)
     {
         const filename = path.basename(filePath);
         const dest = path.join(this.#queuePath, filename);
@@ -157,6 +210,39 @@ export class MailQueue
         attempt();
     }
 
+    /**
+     * Put a failed mail back in the queue
+     * @returns An error message, or undefined on success
+     */
+    resend(filename: string, requestedBy?: string): string|undefined
+    {
+        filename = path.basename(filename); // Prevent path traversal
+        const record = Archive.get(filename);
+        if(!record) return 'Mail not found';
+        if(record.status !== 'failed') return `Only failed mails can be resent (current status: ${record.status})`;
+
+        const source = Archive.filePath(record);
+        if(!source) return 'The mail file no longer exists';
+
+        if(record.location !== 'queue')
+        {
+            try {
+                fs.renameSync(source, path.join(this.#queuePath, filename));
+            } catch(error) {
+                log('error', `Failed to move "${filename}" back to the queue`, {error, filename});
+                return `Failed to move the mail back to the queue: ${String(error)}`;
+            }
+        }
+
+        this.#retryQueue.delete(filename);
+        Archive.markResent(filename, requestedBy);
+        log('info', `Mail "${filename}" was put back in the queue${requestedBy?` by ${requestedBy}`:''}`);
+
+        // A file that never left the queue doesn't trigger the watcher, process it directly
+        if(record.location === 'queue' && !this.#paused)
+            this.#onFileAdded(path.join(this.#queuePath, filename));
+    }
+
     remove(filePath: string)
     {
         try {
@@ -168,17 +254,11 @@ export class MailQueue
 
     #ensureFolderStructure()
     {
-        if(!this.#pathExists(this.#rootPath)?.isDirectory())
-            fs.mkdirSync(this.#rootPath);
-
-        if(!this.#pathExists(this.#tempPath)?.isDirectory())
-            fs.mkdirSync(this.#tempPath);
-
-        if(!this.#pathExists(this.#queuePath)?.isDirectory())
-            fs.mkdirSync(this.#queuePath);
-
-        if(!this.#pathExists(this.#failedPath)?.isDirectory())
-            fs.mkdirSync(this.#failedPath);
+        for(const dir of [this.#rootPath, this.#tempPath, this.#queuePath, this.#failedPath])
+        {
+            if(!this.#pathExists(dir)?.isDirectory())
+                fs.mkdirSync(dir);
+        }
     }
 
     #pathExists(path: string)
@@ -188,6 +268,21 @@ export class MailQueue
         } catch(error: any) {
             if(!('code' in error) || error.code !== 'ENOENT')
                 throw error;
+        }
+    }
+}
+
+/** Rename a file. On Windows a file can be locked for a brief moment after its stream was closed, so retry a few times */
+async function renameWithRetry(from: string, to: string, tries = 5): Promise<void>
+{
+    for(let i=1; ; i++)
+    {
+        try {
+            fs.renameSync(from, to);
+            return;
+        } catch(error: any) {
+            if(i >= tries || !['EPERM','EBUSY','EACCES'].includes(error?.code)) throw error;
+            await new Promise(resolve=>setTimeout(resolve, 100*i));
         }
     }
 }

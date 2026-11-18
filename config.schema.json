@@ -286,6 +286,101 @@
                 }
             }
         },
+        "archive": {
+            "title": "Keep received mails and their metadata (required for the web interface)",
+            "type": "object",
+            "properties": {
+                "retentionDays": {
+                    "title": "Days to keep mails and metadata",
+                    "description": "Default: 30",
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "storeContent": {
+                    "title": "Keep the full mail (EML) of successfully sent mails. When false only metadata is kept",
+                    "description": "Default: true",
+                    "type": "boolean"
+                }
+            }
+        },
+        "web": {
+            "title": "Web interface with search, statistics and resending of failed mails",
+            "type": "object",
+            "properties": {
+                "port": {
+                    "title": "Port of the web interface",
+                    "description": "Default: 8080",
+                    "type": "integer"
+                },
+                "listenAddress": {
+                    "title": "Listen on a specific IP",
+                    "description": "Default: all addresses",
+                    "$ref": "#/definitions/ipaddress"
+                },
+                "publicUrl": {
+                    "title": "URL users use to open the web interface (needed for the Entra ID login redirect and the Teams app)",
+                    "description": "Example: https://smtp2graph.contoso.com:8080",
+                    "type": "string",
+                    "pattern": "^https?://"
+                },
+                "tlsKeyPath": {
+                    "title": "Path to the TLS private key for HTTPS",
+                    "type": "string"
+                },
+                "tlsCertPath": {
+                    "title": "Path to the TLS certificate for HTTPS",
+                    "type": "string"
+                },
+                "auth": {
+                    "title": "Entra ID login",
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "title": "Require an Entra ID login",
+                            "description": "Default: true. Only disable when the web interface is not reachable by others!",
+                            "type": "boolean"
+                        },
+                        "allowedGroups": {
+                            "title": "Object IDs of the Entra ID / AD groups that may use the web interface",
+                            "type": "array",
+                            "items": {"type": "string"}
+                        },
+                        "sessionHours": {
+                            "title": "Session lifetime in hours",
+                            "description": "Default: 8",
+                            "type": "number"
+                        }
+                    }
+                }
+            }
+        },
+        "notify": {
+            "title": "Notifications about failed mails",
+            "type": "object",
+            "properties": {
+                "teams": {
+                    "title": "Teams activity feed notifications",
+                    "type": "object",
+                    "required": ["recipients"],
+                    "properties": {
+                        "recipients": {
+                            "title": "UPNs or object IDs of the users that receive a notification",
+                            "type": "array",
+                            "items": {"type": "string"}
+                        },
+                        "teamsAppId": {
+                            "title": "The id of the SMTP2Graph Teams app (a GUID you choose once)",
+                            "type": "string"
+                        },
+                        "throttleMinutes": {
+                            "title": "Minimum minutes between notifications. Failures in between are bundled",
+                            "description": "Default: 15",
+                            "type": "number"
+                        }
+                    }
+                }
+            }
+        },
         "httpProxy": {
             "title": "Use HTTP proxy",
             "type": "object",

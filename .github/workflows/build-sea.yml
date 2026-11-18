@@ -21,7 +21,7 @@ jobs:
       - name: Setup NodeJS
         uses: actions/setup-node@v4
         with:
-          node-version: '20.x'
+          node-version: '24.x'
 
       - name: Download package.json
         uses: actions/download-artifact@v4
@@ -43,4 +43,4 @@ jobs:
           path: |
             dist/server.js
             dist/smtp2graph-*
-          if-no-files-found: error
+          if-no-files-found: error

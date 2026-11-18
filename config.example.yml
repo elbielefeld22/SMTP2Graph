@@ -75,6 +75,47 @@ receive:
     duration: 30 # Time period in seconds (default: 60 = 1 minute)
     limit: 5 # Maximum number of attempts in the time period (default: 10)
 
+# Optional: Keep received mails for a while (required for the web interface)
+# Note: archived mails contain personal data. Agree on retention and access with your data protection officer
+archive:
+  # Optional: Days to keep mails and their metadata (default: 30)
+  retentionDays: 30
+  # Optional: Keep the full mail of successfully sent mails (default: true). When false only metadata is kept
+  # (failed mails are always kept, so they can be resent)
+  storeContent: true
+
+# Optional: Web interface with search, statistics and resending of failed mails
+web:
+  # Optional: Port (default: 8080)
+  port: 8080
+  # Optional: Listen on a specific IP (default: all addresses)
+  listenAddress: 0.0.0.0
+  # Required when auth is enabled: URL users use to open the web interface
+  # Add "<publicUrl>/auth/callback" as Web redirect URI to the app registration
+  publicUrl: https://smtp2graph.example.com:8080
+  # Optional: HTTPS certificate
+  tlsKeyPath: web.key
+  tlsCertPath: web.crt
+  auth:
+    # Optional: Require an Entra ID login (default: true)
+    enabled: true
+    # Required when auth is enabled: Object IDs of the groups that may use the web interface
+    allowedGroups:
+      - 01234567-89ab-cdef-0123-456789abcdef
+    # Optional: Session lifetime in hours (default: 8)
+    sessionHours: 8
+
+# Optional: Notify users in Teams (activity feed) when mails could not be sent
+notify:
+  teams:
+    # UPNs or object IDs of the users to notify
+    recipients:
+      - admin@example.com
+    # A GUID you generate once, used as id of the SMTP2Graph Teams app (download the app in the web interface)
+    teamsAppId: 89abcdef-0123-4567-89ab-cdef01234567
+    # Optional: Minimum minutes between notifications, failures in between are bundled (default: 15)
+    throttleMinutes: 15
+
 # Optional: HTTP proxy to use for outgoing communication
 httpProxy: 
   host: localhost # Hostname or IP for the proxy

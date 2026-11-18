@@ -169,7 +169,14 @@ export class SMTPServer
             else
             {
                 callback();
-                this.#queue.add(tmpFile);
+                this.#queue.add(tmpFile, {
+                    remoteIp: session.remoteAddress,
+                    clientHostname: session.clientHostname,
+                    smtpUser: typeof session.user === 'string'?session.user:undefined,
+                    tls: Boolean(session.secure),
+                    envelopeFrom: envelope.mailFrom?envelope.mailFrom.address:undefined,
+                    envelopeTo: envelope.rcptTo.map(r=>r.address),
+                });
             }
         });
 

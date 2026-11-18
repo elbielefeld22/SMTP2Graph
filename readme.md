@@ -24,6 +24,7 @@ SMTP2Graph is an SMTP server that will send messages over the Microsoft 365/Exch
 - Rate limiter
 - Brute force protection
 - No issues with SPF/DKIM/DMARC (it's handled by M365)
+- Optional: mail archive with retention, web interface (search, statistics, resend) with Entra ID login and Teams notifications on failures ([docs](docs/web-interface.md))
 
 ## Support the project
 

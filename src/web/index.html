@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SMTP2Graph</title>
+<style nonce="__NONCE__">
+:root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1f2328; --muted: #656d76; --border: #d8dee4;
+    --accent: #0f6cbd; --accent-text: #ffffff; --hover: #f0f3f6;
+    --ok: #1a7f37; --ok-bg: #dafbe1; --err: #cf222e; --err-bg: #ffebe9;
+    --warn: #9a6700; --warn-bg: #fff8c5; --info: #0969da; --info-bg: #ddf4ff;
+    --bar-sent: #2da44e; --bar-failed: #cf222e; --bar-pending: #afb8c1;
+    --shadow: 0 1px 3px rgba(0,0,0,.08);
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #0d1117; --panel: #161b22; --text: #e6edf3; --muted: #8d96a0; --border: #30363d;
+        --accent: #4493f8; --accent-text: #0d1117; --hover: #1f2630;
+        --ok: #3fb950; --ok-bg: #12261e; --err: #f85149; --err-bg: #2d1416;
+        --warn: #d29922; --warn-bg: #2b2111; --info: #58a6ff; --info-bg: #121d2f;
+        --bar-sent: #3fb950; --bar-failed: #f85149; --bar-pending: #6e7681;
+        --shadow: none;
+    }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+button, input, select { font: inherit; color: inherit; }
+a { color: var(--accent); }
+header { display: flex; align-items: center; gap: 16px; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+header h1 { font-size: 17px; margin: 0; }
+header .version { color: var(--muted); font-size: 12px; }
+nav { display: flex; gap: 4px; }
+nav button { background: none; border: 0; padding: 6px 12px; border-radius: 6px; cursor: pointer; color: var(--muted); }
+nav button.active { background: var(--hover); color: var(--text); font-weight: 600; }
+.spacer { flex: 1; }
+.user { color: var(--muted); font-size: 13px; }
+a.btn { text-decoration: none; color: inherit; display: inline-block; }
+.btn { border: 1px solid var(--border); background: var(--panel); padding: 5px 12px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+.btn:hover { background: var(--hover); }
+.btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.btn:disabled { opacity: .55; cursor: default; }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px; align-items: center; }
+.filters input, .filters select { border: 1px solid var(--border); background: var(--bg); padding: 5px 8px; border-radius: 6px; }
+.filters input[type=search] { flex: 1; min-width: 220px; }
+.filters label { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 7px 10px; border-top: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; white-space: nowrap; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--hover); }
+td.nowrap { white-space: nowrap; }
+td.trunc { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.num { font-variant-numeric: tabular-nums; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+.badge.sent { background: var(--ok-bg); color: var(--ok); }
+.badge.failed { background: var(--err-bg); color: var(--err); }
+.badge.retrying { background: var(--warn-bg); color: var(--warn); }
+.badge.queued { background: var(--info-bg); color: var(--info); }
+.pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding: 10px 12px; border-top: 1px solid var(--border); color: var(--muted); }
+.empty { padding: 40px; text-align: center; color: var(--muted); }
+/* Detail drawer */
+.drawer-bg { position: fixed; inset: 0; background: rgba(0,0,0,.3); display: none; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(760px, 100vw); background: var(--panel); border-left: 1px solid var(--border); overflow-y: auto; transform: translateX(100%); transition: transform .15s ease; }
+.drawer.open { transform: none; }
+.drawer-bg.open { display: block; }
+.drawer-head { position: sticky; top: 0; background: var(--panel); padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: flex-start; }
+.drawer-head h2 { font-size: 16px; margin: 0; flex: 1; word-break: break-word; }
+.drawer section { padding: 14px 20px; border-bottom: 1px solid var(--border); }
+.drawer h3 { font-size: 13px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+dl.meta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+dl.meta dt { color: var(--muted); }
+dl.meta dd { margin: 0; word-break: break-word; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.error-box { background: var(--err-bg); color: var(--err); padding: 8px 10px; border-radius: 6px; margin-top: 10px; word-break: break-word; }
+ol.timeline { list-style: none; margin: 0; padding: 0; }
+ol.timeline li { padding: 3px 0; display: grid; grid-template-columns: max-content 11em 1fr; gap: 10px; }
+ol.timeline .t { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+ol.timeline .type { font-weight: 600; }
+ol.timeline .msg { word-break: break-word; }
+pre.body { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--border); padding: 10px; border-radius: 6px; max-height: 400px; overflow: auto; margin: 0; font-size: 13px; }
+table.headers td { font-size: 12px; padding: 3px 8px; }
+table.headers td:first-child { color: var(--muted); white-space: nowrap; }
+table.headers td:last-child { word-break: break-all; }
+details summary { cursor: pointer; color: var(--muted); }
+/* Dashboard */
+.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; }
+.toolbar h2 { margin: 0; font-size: 16px; flex: 1; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 14px; }
+.tile { padding: 12px 14px; }
+.tile .label { color: var(--muted); font-size: 12px; }
+.tile .value { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.tile .value.ok { color: var(--ok); }
+.tile .value.err { color: var(--err); }
+.chart { padding: 14px; margin-bottom: 14px; }
+.chart svg { width: 100%; height: 260px; display: block; }
+.chart .axis { fill: var(--muted); font-size: 11px; }
+.chart .grid { stroke: var(--border); stroke-width: 1; }
+.chart .sent { fill: var(--bar-sent); }
+.chart .failed { fill: var(--bar-failed); }
+.chart .pending { fill: var(--bar-pending); }
+.chart rect.hit { fill: transparent; cursor: pointer; }
+.chart rect.hit:hover { fill: var(--hover); fill-opacity: .6; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.legend .l-sent::before { background: var(--bar-sent); }
+.legend .l-failed::before { background: var(--bar-failed); }
+.legend .l-pending::before { background: var(--bar-pending); }
+.tops { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+.tops .panel { padding: 12px 14px; }
+.tops h3 { margin: 0 0 8px; font-size: 13px; }
+.tops table td { border: 0; padding: 3px 0; }
+.tops table td.key { word-break: break-all; padding-right: 10px; }
+.tops table td.cnt { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.tops .bar { height: 3px; background: var(--accent); border-radius: 2px; opacity: .5; }
+.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 8px; max-width: 90vw; display: none; white-space: pre-line; }
+.toast.show { display: block; }
+.toast.error { background: var(--err); color: #fff; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+    <h1>SMTP2Graph <span class="version">v__VERSION__</span></h1>
+    <nav>
+        <button data-tab="mails" class="active">Mails</button>
+        <button data-tab="stats">Übersicht</button>
+    </nav>
+    <div class="spacer"></div>
+    <a class="btn hidden" id="teamsApp" href="/api/teams-app.zip" title="Teams-App-Paket für das Teams Admin Center herunterladen">Teams-App</a>
+    <button class="btn" id="notifyTest" title="Teams-Testbenachrichtigung an alle konfigurierten Empfänger senden">Teams-Benachrichtigung testen</button>
+    <span class="user" id="user"></span>
+    <a href="/auth/logout" id="logout" class="hidden">Abmelden</a>
+</header>
+
+<main>
+    <div id="tab-mails">
+        <div class="panel">
+            <form class="filters" id="filters">
+                <input type="search" id="q" placeholder="Suche: Betreff, Absender, Empfänger, IP, Message-ID, Fehler …">
+                <select id="status">
+                    <option value="">Alle Status</option>
+                    <option value="sent">Gesendet</option>
+                    <option value="failed">Fehlgeschlagen</option>
+                    <option value="retrying">Wird wiederholt</option>
+                    <option value="queued">In Warteschlange</option>
+                </select>
+                <label>von <input type="date" id="from"></label>
+                <label>bis <input type="date" id="to"></label>
+                <button class="btn primary" type="submit">Suchen</button>
+                <button class="btn" type="button" id="reset">Zurücksetzen</button>
+            </form>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Empfangen</th><th>Status</th><th>Absender</th><th>Empfänger</th><th>Betreff</th><th>Absender-IP</th><th>Versuche</th></tr></thead>
+                    <tbody id="rows"></tbody>
+                </table>
+            </div>
+            <div class="empty hidden" id="empty">Keine Mails gefunden.</div>
+            <div class="pager">
+                <span id="pageInfo"></span>
+                <button class="btn" id="prev">‹ Zurück</button>
+                <button class="btn" id="next">Weiter ›</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="tab-stats" class="hidden">
+        <div class="toolbar">
+            <h2>Status der letzten <span id="daysLabel">30</span> Tage</h2>
+            <select id="days" class="btn">
+                <option value="7">7 Tage</option>
+                <option value="14">14 Tage</option>
+                <option value="30" selected>30 Tage</option>
+            </select>
+        </div>
+        <div class="tiles" id="tiles"></div>
+        <div class="panel chart">
+            <div class="legend"><span class="l-sent">Gesendet</span><span class="l-failed">Fehlgeschlagen</span><span class="l-pending">Ausstehend</span></div>
+            <svg id="chart" role="img" aria-label="Mails pro Tag"></svg>
+        </div>
+        <div class="tops" id="tops"></div>
+    </div>
+</main>
+
+<div class="drawer-bg" id="drawerBg"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+    <div class="drawer-head">
+        <h2 id="dTitle"></h2>
+        <button class="btn" id="dClose" aria-label="Schließen">✕</button>
+    </div>
+    <div id="dBody"></div>
+</aside>
+
+<div class="toast" id="toast"></div>
+
+<script nonce="__NONCE__">
+(function(){
+'use strict';
+
+const $ = id => document.getElementById(id);
+const PAGE_SIZE = 50;
+const STATUS_LABEL = {sent: 'Gesendet', failed: 'Fehlgeschlagen', retrying: 'Wird wiederholt', queued: 'In Warteschlange'};
+const EVENT_LABEL = {received: 'Empfangen', attempt: 'Versuch', sent: 'Gesendet', error: 'Fehler', failed: 'Endgültig fehlgeschlagen', resend: 'Erneut senden', notified: 'Benachrichtigt'};
+let offset = 0, total = 0, me = null;
+
+/** Create an element. Text is always set via textContent, so data can't inject HTML */
+function h(tag, attrs, ...children) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+        if (v === undefined || v === null || v === false) continue;
+        if (k === 'class') el.className = v;
+        else if (k.startsWith('on')) el.addEventListener(k.substring(2), v);
+        else el.setAttribute(k, v);
+    }
+    for (const c of children.flat()) {
+        if (c === undefined || c === null || c === false) continue;
+        el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+    }
+    return el;
+}
+
+function svg(tag, attrs, ...children) {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
+    for (const c of children) el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+    return el;
+}
+
+const fmtDate = ts => ts ? new Date(ts).toLocaleString('de-DE', {dateStyle: 'short', timeStyle: 'medium'}) : '–';
+const fmtSize = b => b == null ? '–' : b < 1024 ? b + ' B' : b < 1048576 ? (b / 1024).toFixed(1) + ' KB' : (b / 1048576).toFixed(1) + ' MB';
+const fmtNum = n => (n || 0).toLocaleString('de-DE');
+const fmtDuration = ms => ms == null ? '–' : ms < 1000 ? Math.round(ms) + ' ms' : ms < 60000 ? (ms / 1000).toFixed(1) + ' s' : (ms / 60000).toFixed(1) + ' min';
+const badge = s => h('span', {class: 'badge ' + s}, STATUS_LABEL[s] || s);
+
+let toastTimer;
+function toast(msg, isError) {
+    const t = $('toast');
+    t.textContent = msg;
+    t.className = 'toast show' + (isError ? ' error' : '');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.className = 'toast', isError ? 8000 : 4000);
+}
+
+async function api(path, opts) {
+    const res = await fetch(path, Object.assign({credentials: 'same-origin', headers: {'X-SMTP2Graph': '1'}}, opts));
+    if (res.status === 401) { location.href = '/auth/login?returnTo=' + encodeURIComponent(location.pathname + location.hash); throw new Error('Nicht angemeldet'); }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    return data;
+}
+
+// ---------------- Tabs ----------------
+function showTab(name) {
+    document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+    $('tab-mails').classList.toggle('hidden', name !== 'mails');
+    $('tab-stats').classList.toggle('hidden', name !== 'stats');
+    if (name === 'stats') loadStats();
+}
+document.querySelectorAll('nav button').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+
+// ---------------- Mail list ----------------
+function dayStart(v) { return v ? new Date(v + 'T00:00:00').getTime() : ''; }
+function dayEnd(v) { return v ? new Date(v + 'T23:59:59.999').getTime() : ''; }
+
+async function loadMails() {
+    const params = new URLSearchParams({
+        q: $('q').value.trim(), status: $('status').value,
+        from: dayStart($('from').value), to: dayEnd($('to').value),
+        limit: PAGE_SIZE, offset,
+    });
+    for (const [k, v] of [...params]) if (v === '') params.delete(k);
+    try {
+        const data = await api('/api/mails?' + params);
+        total = data.total;
+        const rows = $('rows');
+        rows.replaceChildren(...data.items.map(m => h('tr', {onclick: () => openMail(m.id)},
+            h('td', {class: 'nowrap num'}, fmtDate(m.receivedAt)),
+            h('td', null, badge(m.status)),
+            h('td', {class: 'trunc', title: m.headerFrom || ''}, m.envelopeFrom || m.headerFrom || '–'),
+            h('td', {class: 'trunc', title: m.envelopeTo || ''}, m.envelopeTo || m.headerTo || '–'),
+            h('td', {class: 'trunc', title: m.subject || ''}, m.subject || '(kein Betreff)'),
+            h('td', {class: 'nowrap num'}, m.remoteIp || '–'),
+            h('td', {class: 'num'}, m.attempts),
+        )));
+        $('empty').classList.toggle('hidden', data.items.length > 0);
+        $('pageInfo').textContent = total ? `${offset + 1}–${offset + data.items.length} von ${fmtNum(total)}` : '';
+        $('prev').disabled = offset === 0;
+        $('next').disabled = offset + PAGE_SIZE >= total;
+    } catch (e) { toast('Laden fehlgeschlagen: ' + e.message, true); }
+}
+
+$('filters').addEventListener('submit', e => { e.preventDefault(); offset = 0; loadMails(); });
+$('status').addEventListener('change', () => { offset = 0; loadMails(); });
+$('reset').addEventListener('click', () => { $('filters').reset(); offset = 0; loadMails(); });
+$('prev').addEventListener('click', () => { offset = Math.max(0, offset - PAGE_SIZE); loadMails(); });
+$('next').addEventListener('click', () => { offset += PAGE_SIZE; loadMails(); });
+
+// ---------------- Mail details ----------------
+function closeDrawer() {
+    $('drawer').classList.remove('open');
+    $('drawerBg').classList.remove('open');
+    $('drawer').setAttribute('aria-hidden', 'true');
+    if (location.hash.startsWith('#mail=')) history.replaceState(null, '', location.pathname);
+}
+$('dClose').addEventListener('click', closeDrawer);
+$('drawerBg').addEventListener('click', closeDrawer);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
+
+async function openMail(id) {
+    history.replaceState(null, '', '#mail=' + encodeURIComponent(id));
+    $('dTitle').textContent = 'Lade …';
+    $('dBody').replaceChildren();
+    $('drawer').classList.add('open');
+    $('drawerBg').classList.add('open');
+    $('drawer').setAttribute('aria-hidden', 'false');
+
+    let d;
+    try { d = await api('/api/mails/' + encodeURIComponent(id)); }
+    catch (e) { $('dTitle').textContent = 'Fehler'; $('dBody').replaceChildren(h('section', null, e.message)); return; }
+
+    const m = d.record;
+    $('dTitle').textContent = m.subject || '(kein Betreff)';
+
+    const resendBtn = h('button', {class: 'btn primary', onclick: async () => {
+        resendBtn.disabled = true;
+        try {
+            await api('/api/mails/' + encodeURIComponent(m.id) + '/resend', {method: 'POST'});
+            toast('Mail wurde erneut in die Warteschlange gestellt.');
+            setTimeout(() => { openMail(m.id); loadMails(); }, 1500);
+        } catch (e) { toast('Erneut senden fehlgeschlagen: ' + e.message, true); resendBtn.disabled = false; }
+    }}, 'Erneut senden');
+
+    const meta = [
+        ['Status', badge(m.status)],
+        ['Empfangen', fmtDate(m.receivedAt)],
+        ['Gesendet (Graph)', m.sentAt ? fmtDate(m.sentAt) + ' (' + fmtDuration(m.sentAt - m.receivedAt) + ')' : '–'],
+        ['Versuche', m.attempts + (m.resentCount ? ` (${m.resentCount}× manuell erneut gesendet)` : '')],
+        ['Letzter Versuch', fmtDate(m.lastAttemptAt)],
+        ['Absender-IP', m.remoteIp || '–'],
+        ['Client-Hostname', m.clientHostname || '–'],
+        ['SMTP-Benutzer', m.smtpUser || '–'],
+        ['TLS', m.tls == null ? '–' : m.tls ? 'ja' : 'nein'],
+        ['Envelope From', m.envelopeFrom || '–'],
+        ['Envelope To', m.envelopeTo || '–'],
+        ['Von', m.headerFrom || '–'],
+        ['An', m.headerTo || '–'],
+        ['Cc', m.headerCc || '–'],
+        ['Sende-Postfach', m.senderMailbox || '–'],
+        ['Message-ID', m.messageId || '–'],
+        ['Größe', fmtSize(m.size)],
+        ['Datei', m.id + ' (' + (d.fileAvailable ? m.location : 'nicht mehr vorhanden') + ')'],
+    ];
+
+    const sections = [
+        h('section', null,
+            h('div', {class: 'actions'},
+                m.status === 'failed' && d.fileAvailable ? resendBtn : null,
+                d.fileAvailable ? h('a', {class: 'btn', href: '/api/mails/' + encodeURIComponent(m.id) + '/eml'}, 'EML herunterladen') : null,
+            ),
+            m.lastError && m.status !== 'sent' ? h('div', {class: 'error-box'}, m.lastError) : null,
+        ),
+        h('section', null, h('h3', null, 'Details'),
+            h('dl', {class: 'meta'}, meta.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)]))),
+        h('section', null, h('h3', null, 'Verlauf'),
+            h('ol', {class: 'timeline'}, d.events.map(e => h('li', null,
+                h('span', {class: 't'}, fmtDate(e.at)),
+                h('span', {class: 'type'}, EVENT_LABEL[e.type] || e.type),
+                h('span', {class: 'msg'}, e.message || ''))))),
+    ];
+
+    if (d.body) {
+        sections.push(h('section', null, h('h3', null, 'Inhalt (Text)'),
+            h('pre', {class: 'body'}, (d.body.text || '(leer)') + (d.body.truncated ? '\n\n[… gekürzt]' : ''))));
+        if (d.body.attachments.length)
+            sections.push(h('section', null, h('h3', null, `Anhänge (${d.body.attachments.length})`),
+                h('ul', null, d.body.attachments.map(a => h('li', null, `${a.filename || '(ohne Namen)'} – ${a.contentType}, ${fmtSize(a.size)}`)))));
+    } else if (!d.fileAvailable) {
+        sections.push(h('section', null, h('h3', null, 'Inhalt'), h('p', null, 'Der Mailinhalt ist nicht mehr gespeichert (nur Metadaten).')));
+    }
+
+    if (d.headers.length)
+        sections.push(h('section', null, h('details', null, h('summary', null, `Alle Header (${d.headers.length})`),
+            h('table', {class: 'headers'}, h('tbody', null, d.headers.map(x => h('tr', null, h('td', null, x.key), h('td', null, x.value))))))));
+
+    $('dBody').replaceChildren(...sections);
+}
+
+// ---------------- Dashboard ----------------
+async function loadStats() {
+    const days = Number($('days').value);
+    $('daysLabel').textContent = days;
+    let s;
+    try { s = await api('/api/stats?days=' + days); }
+    catch (e) { toast('Statistik konnte nicht geladen werden: ' + e.message, true); return; }
+
+    const t = s.totals || {};
+    const done = (t.sent || 0) + (t.failed || 0);
+    const tiles = [
+        ['Empfangen', fmtNum(t.total)],
+        ['Gesendet', fmtNum(t.sent), 'ok'],
+        ['Fehlgeschlagen', fmtNum(t.failed), t.failed ? 'err' : ''],
+        ['Ausstehend', fmtNum(t.pending)],
+        ['Erfolgsquote', done ? (100 * t.sent / done).toFixed(1).replace('.', ',') + ' %' : '–'],
+        ['Mit Wiederholung', fmtNum(t.retried)],
+        ['Ø Zustellzeit', fmtDuration(t.avgDeliveryMs)],
+        ['Datenvolumen', fmtSize(t.bytes)],
+    ];
+    $('tiles').replaceChildren(...tiles.map(([l, v, c]) => h('div', {class: 'panel tile'}, h('div', {class: 'label'}, l), h('div', {class: 'value ' + (c || '')}, v))));
+
+    drawChart(s.perDay);
+
+    const top = (title, items, onClick) => {
+        const max = Math.max(1, ...items.map(i => i.count));
+        return h('div', {class: 'panel'}, h('h3', null, title),
+            items.length ? h('table', null, h('tbody', null, items.map(i => {
+                const bar = h('div', {class: 'bar'});
+                bar.style.width = (100 * i.count / max) + '%';
+                return h('tr', null,
+                    h('td', {class: 'key', title: i.key}, onClick ? h('a', {href: '#', onclick: e => { e.preventDefault(); onClick(i.key); }}, short(i.key)) : short(i.key), bar),
+                    h('td', {class: 'cnt'}, fmtNum(i.count)));
+            }))) : h('div', {class: 'empty'}, 'Keine Daten'));
+    };
+    const short = v => v.length > 120 ? v.substring(0, 120) + ' …' : v;
+    // Errors are normalized (IDs removed), so search for the text before the first placeholder
+    const errorSearch = v => v.split('…')[0].substring(0, 60).trim();
+    const searchFor = (value, status) => { $('filters').reset(); $('q').value = value; $('status').value = status || ''; offset = 0; showTab('mails'); loadMails(); };
+    $('tops').replaceChildren(
+        top('Häufigste Fehler', s.topErrors || [], v => searchFor(errorSearch(v), 'failed')),
+        top('Top-Absender', s.topSenders || [], v => searchFor(v)),
+        top('Top-Absender-IPs', s.topIps || [], v => searchFor(v)),
+    );
+}
+$('days').addEventListener('change', loadStats);
+
+function drawChart(perDay) {
+    const el = $('chart');
+    const W = Math.max(el.clientWidth, 300), H = 260, L = 40, R = 8, T = 10, B = 26;
+    el.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    // Axis with 4 integer steps (1, 2, 5, 10, 20, 50, …)
+    const max = Math.max(1, ...perDay.map(d => d.total));
+    const raw = max / 4, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const tick = Math.max(1, [1, 2, 5, 10].map(f => f * mag).find(s => s >= raw));
+    const nice = tick * 4;
+    const y = v => T + (H - T - B) * (1 - v / nice);
+    const bw = (W - L - R) / perDay.length;
+    const nodes = [];
+
+    for (let i = 0; i <= 4; i++) {
+        const v = nice * i / 4, yy = y(v);
+        nodes.push(svg('line', {class: 'grid', x1: L, x2: W - R, y1: yy, y2: yy}));
+        nodes.push(svg('text', {class: 'axis', x: L - 6, y: yy + 4, 'text-anchor': 'end'}, fmtNum(v)));
+    }
+
+    const labelEvery = Math.ceil(perDay.length / Math.floor((W - L - R) / 45));
+    perDay.forEach((d, i) => {
+        const x = L + i * bw, w = Math.max(1, bw - Math.min(4, bw * .25));
+        let base = H - B;
+        for (const k of ['sent', 'failed', 'pending']) {
+            if (!d[k]) continue;
+            const hgt = (H - T - B) * d[k] / nice;
+            base -= hgt;
+            nodes.push(svg('rect', {class: k, x: x + (bw - w) / 2, y: base, width: w, height: hgt, rx: 2}));
+        }
+        const [yy, mm, dd] = d.day.split('-');
+        const hit = svg('rect', {class: 'hit', x, y: T, width: bw, height: H - T - B},
+            svg('title', null, `${dd}.${mm}.${yy}\nGesamt: ${d.total}\nGesendet: ${d.sent}\nFehlgeschlagen: ${d.failed}\nAusstehend: ${d.pending}`));
+        hit.addEventListener('click', () => {
+            $('filters').reset(); $('from').value = d.day; $('to').value = d.day; offset = 0; showTab('mails'); loadMails();
+        });
+        nodes.push(hit);
+        if (i % labelEvery === 0) nodes.push(svg('text', {class: 'axis', x: x + bw / 2, y: H - 8, 'text-anchor': 'middle'}, `${dd}.${mm}.`));
+    });
+    el.replaceChildren(...nodes);
+}
+let resizeTimer;
+window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (!$('tab-stats').classList.contains('hidden')) loadStats(); }, 200); });
+
+// ---------------- Teams notification test ----------------
+$('notifyTest').addEventListener('click', async () => {
+    const btn = $('notifyTest');
+    if (!confirm('Testbenachrichtigung an folgende Empfänger senden?\n\n' + me.notify.recipients.join('\n'))) return;
+    btn.disabled = true;
+    try {
+        const r = await api('/api/notify/test', {method: 'POST'});
+        const ok = r.results.filter(x => x.ok).length;
+        const lines = r.results.map(x => (x.ok ? '✓ ' : '✗ ') + x.recipient + (x.error ? ' – ' + x.error : ''));
+        toast(`Testbenachrichtigung: ${ok}/${r.results.length} erfolgreich\n` + lines.join('\n'), ok < r.results.length);
+    } catch (e) { toast('Test fehlgeschlagen: ' + e.message, true); }
+    finally { btn.disabled = false; }
+});
+
+// ---------------- Init ----------------
+(async () => {
+    try {
+        me = await api('/api/me');
+        $('user').textContent = me.user.name || me.user.upn;
+        $('logout').classList.toggle('hidden', !me.authEnabled);
+        $('notifyTest').classList.toggle('hidden', !me.notify.enabled);
+        $('teamsApp').classList.toggle('hidden', !me.notify.enabled || me.notify.teamsAppProblems.length > 0);
+    } catch (e) { toast(e.message, true); }
+
+    const hash = new URLSearchParams(location.hash.substring(1));
+    if (hash.get('status')) $('status').value = hash.get('status');
+    if (hash.get('tab') === 'stats') showTab('stats');
+    await loadMails();
+    if (hash.get('mail')) openMail(hash.get('mail'));
+})();
+})();
+</script>
+</body>
+</html>

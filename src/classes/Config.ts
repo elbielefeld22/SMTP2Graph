@@ -64,6 +64,43 @@ export interface IConfig
             limit?: number;
         };
     },
+    /** Keep received mails and their metadata */
+    archive?: {
+        /** Days to keep mails (default: 30) */
+        retentionDays?: number;
+        /** Keep the full EML of successfully sent mails (default: true). When false only metadata is kept */
+        storeContent?: boolean;
+    },
+    /** Web interface */
+    web?: {
+        /** Port (default: 8080) */
+        port?: number;
+        /** Listen on a specific IP (default: all addresses) */
+        listenAddress?: string;
+        /** URL users use to open the web interface, e.g. https://smtp2graph.contoso.com:8080 (needed for the login redirect) */
+        publicUrl?: string;
+        tlsKeyPath?: string;
+        tlsCertPath?: string;
+        auth?: {
+            /** Require an Entra ID login (default: true) */
+            enabled?: boolean;
+            /** Object IDs of the Entra ID / AD groups that may use the web interface */
+            allowedGroups?: string[];
+            /** Session lifetime in hours (default: 8) */
+            sessionHours?: number;
+        };
+    },
+    /** Notifications about failed mails */
+    notify?: {
+        teams?: {
+            /** UPNs or object IDs of the users that receive a Teams activity notification */
+            recipients: string[];
+            /** The `id` from the Teams app manifest (used to build the deep link) */
+            teamsAppId?: string;
+            /** Minimum minutes between notifications (default: 15). Failures in between are bundled */
+            throttleMinutes?: number;
+        };
+    },
     httpProxy?: {
         host: string,
         port: number,
@@ -125,6 +162,30 @@ export class Config
             throw new InvalidConfig(`Property "receive.authLimit.duration" should be a number`);
         else if(this.smtpAuthLimitDuration && typeof this.smtpAuthLimitDuration !== 'number')
             throw new InvalidConfig(`Property "receive.authLimit.limit" should be a number`);
+        else if(this.#config.archive?.retentionDays !== undefined && (typeof this.#config.archive.retentionDays !== 'number' || this.#config.archive.retentionDays < 1))
+            throw new InvalidConfig(`Property "archive.retentionDays" should be a number >= 1`);
+        else if(this.webEnabled && !this.archiveEnabled)
+            throw new InvalidConfig(`The web interface ("web") requires the archive ("archive") to be enabled`);
+        else if(this.webEnabled && this.webListenIp && !IPCIDR.isValidAddress(this.webListenIp))
+            throw new InvalidConfig('"web.listenAddress" property is invalid');
+        else if(this.webEnabled && Boolean(this.webTlsKeyPath) !== Boolean(this.webTlsCertPath))
+            throw new InvalidConfig(`Properties "web.tlsKeyPath" and "web.tlsCertPath" should be defined together`);
+        else if(this.webTlsKeyPath && !fs.existsSync(this.webTlsKeyPath))
+            throw new InvalidConfig(`Key file "${this.webTlsKeyPath}" could not be found`);
+        else if(this.webTlsCertPath && !fs.existsSync(this.webTlsCertPath))
+            throw new InvalidConfig(`Cert file "${this.webTlsCertPath}" could not be found`);
+        else if(this.webEnabled && this.webAuthEnabled && !this.hasAppReg)
+            throw new InvalidConfig(`The web login requires "send.appReg" to be configured`);
+        else if(this.webEnabled && this.webAuthEnabled && !this.webAllowedGroups.length)
+            throw new InvalidConfig(`Property "web.auth.allowedGroups" should contain at least one group object ID`);
+        else if(this.webEnabled && this.webAuthEnabled && !this.webPublicUrl)
+            throw new InvalidConfig(`Property "web.publicUrl" is required when the web login is enabled`);
+        else if(this.webPublicUrl && !/^https?:\/\/[^/]+/i.test(this.webPublicUrl))
+            throw new InvalidConfig(`Property "web.publicUrl" should be an absolute http(s) URL`);
+        else if(this.#config.notify?.teams && (!Array.isArray(this.#config.notify.teams.recipients) || !this.#config.notify.teams.recipients.length))
+            throw new InvalidConfig(`Property "notify.teams.recipients" should contain at least one user`);
+        else if(this.#config.notify?.teams && !this.hasAppReg)
+            throw new InvalidConfig(`Teams notifications require "send.appReg" to be configured`);
         else if(this.#config.httpProxy && typeof this.#config.httpProxy.host !== 'string')
             throw new InvalidConfig(`Property "httpProxy.host" should be a string`);
         else if(this.#config.httpProxy && typeof this.#config.httpProxy.port !== 'number')
@@ -292,6 +353,83 @@ export class Config
     static get smtpAuthLimitLimit()
     {
         return this.#config.receive?.authLimit?.limit ?? 10;
+    }
+
+    /** True when an app registration with credentials is configured */
+    static get hasAppReg()
+    {
+        return Boolean(this.clientId && this.clientTenant && (this.clientSecret || (this.clientCertificateThumbprint && this.clientCertificateKeyPath)));
+    }
+
+    static get archiveEnabled()
+    {
+        return Boolean(this.#config.archive);
+    }
+
+    static get archiveRetentionDays(): number
+    {
+        return this.#config.archive?.retentionDays ?? 30;
+    }
+
+    static get archiveStoreContent(): boolean
+    {
+        return this.#config.archive?.storeContent ?? true;
+    }
+
+    static get webEnabled()
+    {
+        return Boolean(this.#config.web);
+    }
+
+    static get webPort(): number
+    {
+        return this.#config.web?.port ?? this.getConfigArg('web.port', 'number') ?? 8080;
+    }
+
+    static get webListenIp()
+    {
+        return this.#config.web?.listenAddress;
+    }
+
+    static get webPublicUrl()
+    {
+        return this.#config.web?.publicUrl?.replace(/\/+$/, '');
+    }
+
+    static get webTlsKeyPath()
+    {
+        return this.#config.web?.tlsKeyPath;
+    }
+
+    static get webTlsCertPath()
+    {
+        return this.#config.web?.tlsCertPath;
+    }
+
+    static get webAuthEnabled(): boolean
+    {
+        return this.#config.web?.auth?.enabled ?? true;
+    }
+
+    static get webAllowedGroups(): string[]
+    {
+        return (this.#config.web?.auth?.allowedGroups ?? []).map(g=>String(g).toLowerCase());
+    }
+
+    static get webSessionHours(): number
+    {
+        return this.#config.web?.auth?.sessionHours ?? 8;
+    }
+
+    static get notifyTeams()
+    {
+        const teams = this.#config.notify?.teams;
+        if(!teams?.recipients?.length) return undefined;
+        return {
+            recipients: teams.recipients,
+            teamsAppId: teams.teamsAppId,
+            throttleMinutes: teams.throttleMinutes ?? 15,
+        };
     }
 
     static get httpProxyHost()

@@ -1,9 +1,10 @@
 {
     "compilerOptions": {
-      "target": "ES2017",
+      "target": "ES2022",
       "module": "ESNext",
       "moduleResolution": "Node",
       "strict": true,
+      "skipLibCheck": true,
       "sourceMap": true,
       "allowSyntheticDefaultImports": true
     },
@@ -18,4 +19,4 @@
         "moduleResolution": "NodeNext"
       }
     }  
-  }
+  }

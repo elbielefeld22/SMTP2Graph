@@ -85,7 +85,21 @@ export class Mailer
             } finally {
                 readStream.destroy();
             }
+
+            return sender;
         });
+    }
+
+    /** The MSAL client of the configured app registration (undefined when not configured) */
+    static get msalClient()
+    {
+        return this.#msalClient;
+    }
+
+    /** Get an app-only access token for the Graph API */
+    static getAppToken(): Promise<string>
+    {
+        return this.#aquireToken();
     }
 
     /** Automatically retry a request when it's being throttled by the Graph API */
