@@ -118,6 +118,31 @@ details summary { cursor: pointer; color: var(--muted); }
 .tops table td.key { word-break: break-all; padding-right: 10px; }
 .tops table td.cnt { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
 .tops .bar { height: 3px; background: var(--accent); border-radius: 2px; opacity: .5; }
+.tile.link { cursor: pointer; }
+.tile.link:hover, .tile.link:focus-visible { border-color: var(--accent); outline: none; }
+.tile.link .label::after { content: " ›"; }
+.chart rect.seg { cursor: pointer; }
+.chart rect.seg:hover { opacity: .8; }
+/* Settings */
+.settings-info { color: var(--muted); margin: 0 0 14px; }
+.settings-group { padding: 14px 16px; margin-bottom: 14px; }
+.settings-group h3 { margin: 0 0 10px; font-size: 14px; }
+.setting { display: grid; grid-template-columns: minmax(180px, 280px) 1fr; gap: 4px 16px; padding: 10px 0; border-top: 1px solid var(--border); }
+.setting:first-of-type { border-top: 0; }
+.setting label.name { font-weight: 600; padding-top: 5px; }
+.setting .control { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.setting input[type=text], .setting input[type=email], .setting input[type=number] { border: 1px solid var(--border); background: var(--bg); padding: 5px 8px; border-radius: 6px; }
+.setting input[type=text], .setting input[type=email] { width: min(360px, 100%); }
+.setting input[type=number] { width: 110px; }
+.setting input.changed { border-color: var(--accent); }
+.setting input.invalid { border-color: var(--err); }
+.setting .unit, .setting .help { color: var(--muted); font-size: 12px; }
+.setting .help { grid-column: 2; }
+.setting .ferr { grid-column: 2; color: var(--err); font-size: 12px; }
+.settings-actions { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; }
+.settings-actions .dirty { color: var(--muted); font-size: 13px; }
+table.history td { font-size: 13px; }
+@media (max-width: 640px) { .setting { grid-template-columns: 1fr; } .setting .help, .setting .ferr { grid-column: 1; } }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 8px; max-width: 90vw; display: none; white-space: pre-line; }
 .toast.show { display: block; }
 .toast.error { background: var(--err); color: #fff; }
@@ -130,6 +155,7 @@ details summary { cursor: pointer; color: var(--muted); }
     <nav>
         <button data-tab="mails" class="active">Mails</button>
         <button data-tab="stats">Übersicht</button>
+        <button data-tab="settings">Einstellungen</button>
     </nav>
     <div class="spacer"></div>
     <span class="user" id="user"></span>
@@ -147,12 +173,14 @@ details summary { cursor: pointer; color: var(--muted); }
                     <option value="failed">Fehlgeschlagen</option>
                     <option value="retrying">Wird wiederholt</option>
                     <option value="queued">In Warteschlange</option>
+                    <option value="pending">Ausstehend (Warteschlange + Wiederholung)</option>
                 </select>
                 <label class="check" title="Nur Mails, die über das Ersatzpostfach gesendet wurden"><input type="checkbox" id="fallback"> Ersatzpostfach</label>
+                <label class="check" title="Nur Mails, die mehr als einen Versuch brauchten"><input type="checkbox" id="retried"> Mit Wiederholung</label>
                 <label>von <input type="date" id="from"></label>
                 <label>bis <input type="date" id="to"></label>
                 <button class="btn primary" type="submit">Suchen</button>
-                <button class="btn" type="button" id="reset">Zurücksetzen</button>
+                <button class="btn" type="button" id="resetFilters">Zurücksetzen</button>
             </form>
             <div class="table-wrap">
                 <table>
@@ -184,6 +212,23 @@ details summary { cursor: pointer; color: var(--muted); }
             <svg id="chart" role="img" aria-label="Mails pro Tag"></svg>
         </div>
         <div class="tops" id="tops"></div>
+    </div>
+
+    <div id="tab-settings" class="hidden">
+        <div class="toolbar"><h2>Einstellungen</h2></div>
+        <p class="settings-info" id="settingsInfo"></p>
+        <form id="settingsForm" novalidate>
+            <div id="settingsGroups"></div>
+            <div class="settings-actions">
+                <button class="btn primary" type="submit" id="settingsSave" disabled>Speichern</button>
+                <button class="btn" type="button" id="settingsReset" disabled>Verwerfen</button>
+                <span class="dirty" id="settingsDirty"></span>
+            </div>
+        </form>
+        <div class="panel settings-group">
+            <h3>Letzte Änderungen</h3>
+            <div class="table-wrap" id="settingsHistory"></div>
+        </div>
     </div>
 </main>
 
@@ -247,10 +292,11 @@ function toast(msg, isError) {
 }
 
 async function api(path, opts) {
-    const res = await fetch(path, Object.assign({credentials: 'same-origin', headers: {'X-SMTP2Graph': '1'}}, opts));
+    opts = opts || {};
+    const res = await fetch(path, Object.assign({}, opts, {credentials: 'same-origin', headers: Object.assign({'X-SMTP2Graph': '1'}, opts.headers)}));
     if (res.status === 401) { location.href = '/auth/login?returnTo=' + encodeURIComponent(location.pathname + location.hash); throw new Error('Nicht angemeldet'); }
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    if (!res.ok) { const err = new Error(data.error || ('HTTP ' + res.status)); err.data = data; throw err; }
     return data;
 }
 
@@ -259,7 +305,9 @@ function showTab(name) {
     document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
     $('tab-mails').classList.toggle('hidden', name !== 'mails');
     $('tab-stats').classList.toggle('hidden', name !== 'stats');
+    $('tab-settings').classList.toggle('hidden', name !== 'settings');
     if (name === 'stats') loadStats();
+    if (name === 'settings') loadSettings();
 }
 document.querySelectorAll('nav button').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
 
@@ -269,7 +317,7 @@ function dayEnd(v) { return v ? new Date(v + 'T23:59:59.999').getTime() : ''; }
 
 async function loadMails() {
     const params = new URLSearchParams({
-        q: $('q').value.trim(), status: $('status').value, fallback: $('fallback').checked ? '1' : '',
+        q: $('q').value.trim(), status: $('status').value, fallback: $('fallback').checked ? '1' : '', retried: $('retried').checked ? '1' : '',
         from: dayStart($('from').value), to: dayEnd($('to').value),
         limit: PAGE_SIZE, offset,
     });
@@ -297,7 +345,30 @@ async function loadMails() {
 $('filters').addEventListener('submit', e => { e.preventDefault(); offset = 0; loadMails(); });
 $('status').addEventListener('change', () => { offset = 0; loadMails(); });
 $('fallback').addEventListener('change', () => { offset = 0; loadMails(); });
-$('reset').addEventListener('click', () => { $('filters').reset(); offset = 0; loadMails(); });
+$('retried').addEventListener('change', () => { offset = 0; loadMails(); });
+
+/** Open the mail list with filters, e.g. from the dashboard. `from`/`to` are YYYY-MM-DD */
+function openMails(f) {
+    $('filters').reset();
+    $('q').value = f.q || '';
+    $('status').value = f.status || '';
+    $('fallback').checked = Boolean(f.fallback);
+    $('retried').checked = Boolean(f.retried);
+    $('from').value = f.from || '';
+    $('to').value = f.to || '';
+    offset = 0;
+    showTab('mails');
+    loadMails();
+}
+
+const isoDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+/** Date range of the dashboard period */
+function statsPeriod() {
+    const days = Number($('days').value), start = new Date();
+    start.setDate(start.getDate() - (days - 1));
+    return {from: isoDay(start), to: isoDay(new Date())};
+}
+$('resetFilters').addEventListener('click', () => { $('filters').reset(); offset = 0; loadMails(); });
 $('prev').addEventListener('click', () => { offset = Math.max(0, offset - PAGE_SIZE); loadMails(); });
 $('next').addEventListener('click', () => { offset += PAGE_SIZE; loadMails(); });
 
@@ -401,18 +472,26 @@ async function loadStats() {
 
     const t = s.totals || {};
     const done = (t.sent || 0) + (t.failed || 0);
+    const period = statsPeriod();
+    // [label, value, css class, filter for the mail list (undefined = not clickable)]
     const tiles = [
-        ['Empfangen', fmtNum(t.total)],
-        ['Gesendet', fmtNum(t.sent), 'ok'],
-        ['Fehlgeschlagen', fmtNum(t.failed), t.failed ? 'err' : ''],
-        ['Ausstehend', fmtNum(t.pending)],
+        ['Empfangen', fmtNum(t.total), '', {}],
+        ['Gesendet', fmtNum(t.sent), 'ok', {status: 'sent'}],
+        ['Fehlgeschlagen', fmtNum(t.failed), t.failed ? 'err' : '', {status: 'failed'}],
+        ['Ausstehend', fmtNum(t.pending), '', {status: 'pending'}],
         ['Erfolgsquote', done ? (100 * t.sent / done).toFixed(1).replace('.', ',') + ' %' : '–'],
-        ['Mit Wiederholung', fmtNum(t.retried)],
-        ['Über Ersatzpostfach', fmtNum(t.fallback)],
+        ['Mit Wiederholung', fmtNum(t.retried), '', {retried: true}],
+        ['Über Ersatzpostfach', fmtNum(t.fallback), '', {fallback: true}],
         ['Ø Zustellzeit', fmtDuration(t.avgDeliveryMs)],
         ['Datenvolumen', fmtSize(t.bytes)],
     ];
-    $('tiles').replaceChildren(...tiles.map(([l, v, c]) => h('div', {class: 'panel tile'}, h('div', {class: 'label'}, l), h('div', {class: 'value ' + (c || '')}, v))));
+    $('tiles').replaceChildren(...tiles.map(([l, v, c, f]) => {
+        if (!f) return h('div', {class: 'panel tile'}, h('div', {class: 'label'}, l), h('div', {class: 'value ' + (c || '')}, v));
+        const go = () => openMails(Object.assign({}, period, f));
+        return h('div', {class: 'panel tile link', role: 'link', tabindex: '0', title: 'Mails anzeigen',
+            onclick: go, onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } }},
+            h('div', {class: 'label'}, l), h('div', {class: 'value ' + (c || '')}, v));
+    }));
 
     drawChart(s.perDay);
 
@@ -430,7 +509,7 @@ async function loadStats() {
     const short = v => v.length > 120 ? v.substring(0, 120) + ' …' : v;
     // Errors are normalized (IDs removed), so search for the text before the first placeholder
     const errorSearch = v => v.split('…')[0].substring(0, 60).trim();
-    const searchFor = (value, status) => { $('filters').reset(); $('q').value = value; $('status').value = status || ''; offset = 0; showTab('mails'); loadMails(); };
+    const searchFor = (value, status) => openMails(Object.assign({}, period, {q: value, status}));
     $('tops').replaceChildren(
         top('Häufigste Fehler', s.topErrors || [], v => searchFor(errorSearch(v), 'failed')),
         top('Top-Absender', s.topSenders || [], v => searchFor(v)),
@@ -461,26 +540,136 @@ function drawChart(perDay) {
     const labelEvery = Math.ceil(perDay.length / Math.floor((W - L - R) / 45));
     perDay.forEach((d, i) => {
         const x = L + i * bw, w = Math.max(1, bw - Math.min(4, bw * .25));
+        const [yy, mm, dd] = d.day.split('-');
+        // Whole day (background), then the status segments on top: each opens the mail list filtered by day (and status)
+        const hit = svg('rect', {class: 'hit', x, y: T, width: bw, height: H - T - B},
+            svg('title', null, `${dd}.${mm}.${yy}\nGesamt: ${d.total}\nGesendet: ${d.sent}\nFehlgeschlagen: ${d.failed}\nAusstehend: ${d.pending}\n\nKlicken: Mails dieses Tages anzeigen`));
+        hit.addEventListener('click', () => openMails({from: d.day, to: d.day}));
+        nodes.push(hit);
+        const SEG_LABEL = {sent: 'Gesendet', failed: 'Fehlgeschlagen', pending: 'Ausstehend'};
         let base = H - B;
         for (const k of ['sent', 'failed', 'pending']) {
             if (!d[k]) continue;
             const hgt = (H - T - B) * d[k] / nice;
             base -= hgt;
-            nodes.push(svg('rect', {class: k, x: x + (bw - w) / 2, y: base, width: w, height: hgt, rx: 2}));
+            const seg = svg('rect', {class: k + ' seg', x: x + (bw - w) / 2, y: base, width: w, height: hgt, rx: 2},
+                svg('title', null, `${dd}.${mm}.${yy}: ${d[k]} ${SEG_LABEL[k]}\n\nKlicken: diese Mails anzeigen`));
+            seg.addEventListener('click', () => openMails({from: d.day, to: d.day, status: k}));
+            nodes.push(seg);
         }
-        const [yy, mm, dd] = d.day.split('-');
-        const hit = svg('rect', {class: 'hit', x, y: T, width: bw, height: H - T - B},
-            svg('title', null, `${dd}.${mm}.${yy}\nGesamt: ${d.total}\nGesendet: ${d.sent}\nFehlgeschlagen: ${d.failed}\nAusstehend: ${d.pending}`));
-        hit.addEventListener('click', () => {
-            $('filters').reset(); $('from').value = d.day; $('to').value = d.day; offset = 0; showTab('mails'); loadMails();
-        });
-        nodes.push(hit);
         if (i % labelEvery === 0) nodes.push(svg('text', {class: 'axis', x: x + bw / 2, y: H - 8, 'text-anchor': 'middle'}, `${dd}.${mm}.`));
     });
     el.replaceChildren(...nodes);
 }
 let resizeTimer;
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (!$('tab-stats').classList.contains('hidden')) loadStats(); }, 200); });
+
+// ---------------- Settings ----------------
+let settingsData = null;
+
+async function loadSettings() {
+    try { settingsData = await api('/api/settings'); }
+    catch (e) { toast('Einstellungen konnten nicht geladen werden: ' + e.message, true); return; }
+    renderSettings();
+}
+
+function settingValue(s) {
+    const el = $('set-' + s.key);
+    if (s.type === 'bool') return el.checked;
+    if (s.type === 'int') return el.value.trim() === '' ? '' : Number(el.value);
+    return el.value.trim();
+}
+
+function changedSettings() {
+    const changes = {};
+    for (const s of settingsData.settings) {
+        const v = settingValue(s);
+        if (String(v) !== String(s.value)) changes[s.key] = v;
+    }
+    return changes;
+}
+
+function updateDirty() {
+    const n = Object.keys(changedSettings()).length;
+    for (const s of settingsData.settings) {
+        const el = $('set-' + s.key);
+        el.classList.toggle('changed', String(settingValue(s)) !== String(s.value));
+    }
+    $('settingsSave').disabled = n === 0;
+    $('settingsReset').disabled = n === 0;
+    $('settingsDirty').textContent = n ? `${n} ungespeicherte Änderung${n > 1 ? 'en' : ''}` : '';
+}
+
+function renderSettings(fieldErrors) {
+    fieldErrors = fieldErrors || {};
+    $('settingsInfo').textContent = `Änderungen gelten sofort, ohne Neustart, und werden in ${settingsData.configFile} gespeichert (vorherige Version: ${settingsData.configFile}.bak). `
+        + 'Ports, IP-Adressen und -Freigaben, Absender-Freigaben, SMTP-Benutzer, TLS, App-Registrierung, Anmeldung und Zugriffsgruppen lassen sich nur direkt in der config.yml ändern.';
+
+    const groups = [];
+    for (const s of settingsData.settings) {
+        let g = groups.find(x => x.name === s.group);
+        if (!g) groups.push(g = {name: s.group, items: []});
+        g.items.push(s);
+    }
+
+    $('settingsGroups').replaceChildren(...groups.map(g => h('div', {class: 'panel settings-group'}, h('h3', null, g.name), g.items.map(s => {
+        const id = 'set-' + s.key;
+        let input;
+        if (s.type === 'bool') input = h('input', {type: 'checkbox', id});
+        else if (s.type === 'int') input = h('input', {type: 'number', id, min: s.min, max: s.max, step: 1, inputmode: 'numeric'});
+        else input = h('input', {type: s.type === 'email' ? 'email' : 'text', id, maxlength: s.maxLength || 200, spellcheck: 'false',
+            placeholder: s.optional ? (s.defaultValue ? 'leer = ' + s.defaultValue : 'leer = nicht verwendet') : String(s.defaultValue)});
+        if (s.type === 'bool') input.checked = Boolean(s.value); else input.value = s.value;
+        input.addEventListener('input', updateDirty);
+        input.addEventListener('change', updateDirty);
+        const range = s.type === 'int' ? `${s.min}–${s.max}${s.unit ? ' ' + s.unit : ''}, Standard ${s.defaultValue}` : (s.type === 'bool' ? `Standard: ${s.defaultValue ? 'an' : 'aus'}` : '');
+        if (fieldErrors[s.key]) input.classList.add('invalid');
+        return h('div', {class: 'setting'},
+            h('label', {class: 'name', for: id}, s.label),
+            h('div', {class: 'control'}, input, range ? h('span', {class: 'unit'}, range) : null),
+            s.help ? h('div', {class: 'help'}, s.help) : null,
+            fieldErrors[s.key] ? h('div', {class: 'ferr'}, fieldErrors[s.key]) : null);
+    }))));
+
+    const hist = settingsData.history || [];
+    const label = key => (settingsData.settings.find(s => s.key === key) || {}).label || key;
+    $('settingsHistory').replaceChildren(hist.length ? h('table', {class: 'history'},
+        h('thead', null, h('tr', null, h('th', null, 'Zeitpunkt'), h('th', null, 'Benutzer'), h('th', null, 'Einstellung'), h('th', null, 'Alt'), h('th', null, 'Neu'))),
+        h('tbody', null, hist.map(x => h('tr', null, h('td', {class: 'nowrap num'}, fmtDate(x.at)), h('td', null, x.user), h('td', null, label(x.key)),
+            h('td', null, x.oldValue === '' ? '(leer)' : x.oldValue), h('td', null, x.newValue === '' ? '(leer)' : x.newValue)))))
+        : h('div', {class: 'empty'}, 'Noch keine Änderungen über die Weboberfläche.'));
+    updateDirty();
+}
+
+$('settingsReset').addEventListener('click', () => renderSettings());
+$('settingsForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const changes = changedSettings();
+    if (!Object.keys(changes).length) return;
+
+    // Warn before changes that delete data
+    const warnings = [];
+    const days = changes['archive.retentionDays'], oldDays = settingsData.settings.find(s => s.key === 'archive.retentionDays');
+    if (days !== undefined && oldDays && Number(days) < Number(oldDays.value))
+        warnings.push(`Die Aufbewahrung wird auf ${days} Tage verkürzt. Ältere Mails und Metadaten werden innerhalb der nächsten Stunde endgültig gelöscht.`);
+    if (changes['archive.storeContent'] === false)
+        warnings.push('Der Inhalt künftig gesendeter Mails wird nicht mehr gespeichert (nur Metadaten).');
+    if (warnings.length && !confirm(warnings.join('\n\n') + '\n\nTrotzdem speichern?')) return;
+
+    $('settingsSave').disabled = true;
+    try {
+        const r = await api('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({changes})});
+        settingsData = Object.assign(settingsData, {settings: r.settings, history: r.history});
+        renderSettings();
+        toast(r.changed.length ? 'Gespeichert: ' + r.changed.map(c => c.label).join(', ') : 'Keine Änderungen');
+    } catch (err) {
+        renderSettings(err.data && err.data.fieldErrors);
+        // Keep the user's input after a failed save
+        for (const [k, v] of Object.entries(changes)) { const el = $('set-' + k); if (el) { if (el.type === 'checkbox') el.checked = v; else el.value = v; } }
+        updateDirty();
+        toast('Nicht gespeichert: ' + err.message, true);
+    }
+});
 
 // ---------------- Init ----------------
 (async () => {
@@ -493,6 +682,7 @@ window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer
     const hash = new URLSearchParams(location.hash.substring(1));
     if (hash.get('status')) $('status').value = hash.get('status');
     if (hash.get('tab') === 'stats') showTab('stats');
+    if (hash.get('tab') === 'settings') showTab('settings');
     await loadMails();
     if (hash.get('mail')) openMail(hash.get('mail'));
 })();

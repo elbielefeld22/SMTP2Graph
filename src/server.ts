@@ -4,6 +4,7 @@ import { MailQueue } from './classes/MailQueue';
 import { SMTPServer } from './classes/SMTPServer';
 import { WebServer } from './classes/WebServer';
 import { Archive } from './classes/Archive';
+import chokidar from 'chokidar';
 
 // node:sqlite still prints an ExperimentalWarning, which is just noise for our users
 const emitWarning = process.emitWarning;
@@ -27,6 +28,18 @@ else
         }
 
         const queue = new MailQueue();
+
+        // Apply changes to config.yml (from the web interface or an editor) without restart
+        let reloadTimer: NodeJS.Timeout|undefined;
+        chokidar.watch(Config.configFile, {ignoreInitial: true}).on('all', (event)=>{
+            if(event !== 'change' && event !== 'add') return;
+            clearTimeout(reloadTimer);
+            reloadTimer = setTimeout(()=>{
+                const error = Config.reload();
+                if(error) log('error', `config.yml was changed but is invalid, keeping the current settings. ${error}`, {error});
+                else log('info', 'config.yml reloaded (ports, addresses, TLS and the app registration need a restart)');
+            }, 500);
+        });
 
         if(Config.webEnabled)
         {

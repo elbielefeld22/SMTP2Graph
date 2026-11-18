@@ -70,9 +70,12 @@ interface IParsedFile
 export interface ISearchOptions
 {
     q?: string;
-    status?: MailStatus;
+    /** A status, or 'pending' for queued + retrying */
+    status?: MailStatus|'pending';
     /** Only mails sent from the fallback mailbox */
     fallback?: boolean;
+    /** Only mails that needed more than one attempt */
+    retried?: boolean;
     from?: number;
     to?: number;
     limit?: number;
@@ -148,6 +151,14 @@ export class Archive
                 message TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_events_mail ON events(mail_id);
+            CREATE TABLE IF NOT EXISTS settings_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                at INTEGER NOT NULL,
+                user TEXT NOT NULL,
+                key TEXT NOT NULL,
+                old_value TEXT,
+                new_value TEXT
+            );
         `);
 
         // Migrations for databases created by older versions
@@ -339,8 +350,10 @@ export class Archive
                 where.push('(' + cols.map(c=>`${c} LIKE ? ESCAPE '\\'`).join(' OR ') + ')');
                 params.push(...cols.map(()=>like));
             }
-            if(opts.status) { where.push('status = ?'); params.push(opts.status); }
+            if(opts.status === 'pending') where.push(`status IN ('queued','retrying')`);
+            else if(opts.status) { where.push('status = ?'); params.push(opts.status); }
             if(opts.fallback) where.push('fallback_for IS NOT NULL');
+            if(opts.retried) where.push('attempts > 1');
             if(opts.from) { where.push('received_at >= ?'); params.push(opts.from); }
             if(opts.to) { where.push('received_at <= ?'); params.push(opts.to); }
 
@@ -405,6 +418,21 @@ export class Archive
         });
     }
 
+    /** Remember a settings change made in the web interface */
+    static logSetting(user: string, key: string, oldValue: string, newValue: string)
+    {
+        this.#safe('log settings change', ()=>{
+            this.#stmt('INSERT INTO settings_log (at, user, key, old_value, new_value) VALUES (?, ?, ?, ?, ?)').run(Date.now(), user, key, oldValue, newValue);
+        });
+    }
+
+    static settingsHistory(limit = 50): {at: number, user: string, key: string, oldValue: string, newValue: string}[]
+    {
+        return this.#safe('get settings history', ()=>
+            this.#stmt('SELECT at, user, key, old_value AS oldValue, new_value AS newValue FROM settings_log ORDER BY id DESC LIMIT ?').all(limit) as any
+        ) ?? [];
+    }
+
     /** Group errors, ignoring the parts that differ per occurrence (IDs, timestamps) */
     static #topErrors(since: number)
     {
@@ -439,6 +467,9 @@ export class Archive
                 }
                 this.#stmt('DELETE FROM mails WHERE id = ?').run(rec.id);
             }
+
+            // Settings history is kept for a year
+            this.#stmt('DELETE FROM settings_log WHERE at < ?').run(Date.now() - 365*24*60*60*1000);
 
             // Remove orphaned files in the archive folder
             const archiveDir = path.join(this.#rootPath, 'archive');

@@ -29,6 +29,13 @@ export class SMTPServer
     constructor(queue: MailQueue)
     {
         this.#queue = queue;
+
+        // Banner and maximum size are read per connection, so changed settings apply without restart
+        Config.onChange(()=>{
+            const options = (this.#server as any).options;
+            options.banner = Config.smtpBanner ?? `SMTP2Graph ${VERSION}`;
+            options.size = Config.smtpMaxSize;
+        });
         this.#server = new NodeSMTP({
             onConnect: this.#onConnect,
             onAuth: this.#onAuth,

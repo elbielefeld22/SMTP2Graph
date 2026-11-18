@@ -11,6 +11,7 @@ import { MailQueue } from './MailQueue';
 import { Mailer } from './Mailer';
 import { readHeaders, decodeHeader } from './MailHeaders';
 import { prefixedLog } from './Logger';
+import { Settings, SettingsError } from './Settings';
 import indexHtml from '../web/index.html';
 
 const log = prefixedLog('WebServer');
@@ -148,11 +149,12 @@ export class WebServer
         if(method === 'GET' && p === '/api/mails')
         {
             const status = url.searchParams.get('status') || undefined;
-            if(status && !['queued','retrying','sent','failed'].includes(status)) throw new HttpError(400, 'Invalid status');
+            if(status && !['queued','retrying','sent','failed','pending'].includes(status)) throw new HttpError(400, 'Invalid status');
             return this.#json(res, 200, Archive.search({
                 q: url.searchParams.get('q')?.trim() || undefined,
-                status: status as MailStatus|undefined,
+                status: status as MailStatus|'pending'|undefined,
                 fallback: url.searchParams.get('fallback') === '1',
+                retried: url.searchParams.get('retried') === '1',
                 from: this.#num(url.searchParams.get('from')),
                 to: this.#num(url.searchParams.get('to')),
                 limit: this.#num(url.searchParams.get('limit')),
@@ -164,6 +166,21 @@ export class WebServer
         {
             const days = Math.min(Math.max(this.#num(url.searchParams.get('days')) ?? 30, 1), 365);
             return this.#json(res, 200, Archive.stats(days) ?? {});
+        }
+
+        if(method === 'GET' && p === '/api/settings')
+            return this.#json(res, 200, {settings: Settings.list(), history: Archive.settingsHistory(30), configFile: Config.configFile});
+
+        if(method === 'POST' && p === '/api/settings')
+        {
+            const body = await this.#readJson(req);
+            try {
+                const changed = Settings.update(body?.changes, user.upn);
+                return this.#json(res, 200, {changed, settings: Settings.list(), history: Archive.settingsHistory(30)});
+            } catch(error) {
+                if(error instanceof SettingsError) return this.#json(res, 400, {error: error.message, fieldErrors: error.fieldErrors});
+                throw error;
+            }
         }
 
         const mailMatch = /^\/api\/mails\/([^/]+)(\/eml|\/resend)?$/.exec(p);
@@ -369,6 +386,27 @@ export class WebServer
     }
 
     // ---------------- Helpers ----------------
+
+    /** Read a (small) JSON request body */
+    #readJson(req: http.IncomingMessage, maxBytes = 64*1024): Promise<any>
+    {
+        return new Promise((resolve, reject)=>{
+            if(!String(req.headers['content-type'] || '').includes('application/json'))
+                return reject(new HttpError(415, 'Expected application/json'));
+            let size = 0;
+            const chunks: Buffer[] = [];
+            req.on('data', (chunk: Buffer)=>{
+                size += chunk.length;
+                if(size > maxBytes) { reject(new HttpError(413, 'Request too large')); req.destroy(); }
+                else chunks.push(chunk);
+            });
+            req.on('end', ()=>{
+                try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}')); }
+                catch { reject(new HttpError(400, 'Invalid JSON')); }
+            });
+            req.on('error', reject);
+        });
+    }
 
     #cookies(req: http.IncomingMessage): Record<string, string>
     {

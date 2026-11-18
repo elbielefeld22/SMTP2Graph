@@ -106,6 +106,63 @@ export class InvalidConfig extends Error { }
 export class Config
 {
     static #configData: IConfig | undefined;
+    static #changeListeners: (()=>void)[] = [];
+
+    /** Path of the config file (--config=… or config.yml in the working directory) */
+    static get configFile(): string
+    {
+        const configFileArgs = process.argv.find(arg=>arg.startsWith('--config=') && arg.length > 9);
+        return configFileArgs?configFileArgs.substring(9):'config.yml';
+    }
+
+    /**
+     * Check a config object without activating it
+     * @returns The validation error, or undefined when it's valid
+     */
+    static validateCandidate(data: IConfig): string|undefined
+    {
+        if(!data || typeof data !== 'object') return 'The config is empty or not a YAML object';
+        const previous = this.#configData;
+        this.#configData = data;
+        try {
+            this.validate();
+            return undefined;
+        } catch(error) {
+            return (error instanceof Error)?error.message:String(error);
+        } finally {
+            this.#configData = previous;
+        }
+    }
+
+    /**
+     * Re-read the config file. When the file is invalid the current config stays active.
+     * Most settings are read on use and apply immediately; ports, addresses, TLS and the app registration need a restart.
+     * @returns An error message, or undefined on success
+     */
+    static reload(): string|undefined
+    {
+        let data: IConfig;
+        try {
+            data = parseYaml(fs.readFileSync(this.configFile).toString('utf-8'));
+        } catch(error) {
+            return `Unable to read config file "${this.configFile}". ${String(error)}`;
+        }
+
+        const error = this.validateCandidate(data);
+        if(error) return error;
+
+        this.#configData = data;
+        for(const listener of this.#changeListeners)
+        {
+            try { listener(); } catch { /* a listener must not break the reload */ }
+        }
+    }
+
+    /** Get notified after the config was reloaded */
+    static onChange(listener: ()=>void)
+    {
+        this.#changeListeners.push(listener);
+    }
 
     /** Check if the config file is valid */
     static validate()
@@ -309,6 +366,12 @@ export class Config
         return 100*1024*1024; // Default to 100MB
     }
 
+    /** The configured maximum size as written in the config (e.g. "25m") */
+    static get smtpMaxSizeSetting(): string
+    {
+        return this.#config.receive?.maxSize ?? '100m';
+    }
+
     static get smtpBanner()
     {
         return this.#config.receive?.banner;
@@ -501,8 +564,7 @@ export class Config
     {
         if(this.#configData === undefined) // We need to load the config first?
         {
-            const configFileArgs = process.argv.find(arg=>arg.startsWith('--config=') && arg.length > 9);
-            const configFile = configFileArgs?configFileArgs.substring(9):'config.yml';
+            const configFile = this.configFile;
 
             try {
                 const data = fs.readFileSync(configFile);

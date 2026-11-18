@@ -23,6 +23,20 @@ These features are optional and only active when the corresponding sections exis
 Unrecoverable errors (e.g. access denied to the mailbox) and mails that hit the retry limit are moved to `mailroot/failed`.
 With `retryLimit: 0` failed mails go to `mailroot/failed` immediately.
 
+## Settings in the web interface
+
+The tab **Einstellungen** changes settings that apply without restart and can't make the service unstartable or lock
+anybody out: retries, force/fallback mailbox, SMTP banner and maximum size, archive retention/content and the session
+lifetime. Ports, addresses, IP/FROM whitelists, SMTP users, TLS, the app registration, the login and the allowed groups
+can only be changed in `config.yml`.
+
+- Values are checked, then the resulting config is validated as a whole before `config.yml` is written (atomically,
+  comments and formatting are kept, the previous version is saved as `config.yml.bak`).
+- Every change is logged (log file and the history in the tab, kept for a year) with the user who made it.
+- All users of the allowed groups can change these settings.
+- `config.yml` is also reloaded automatically when it's edited by hand. An invalid file is ignored (the running config
+  stays active, an error is logged). Ports, addresses, TLS and the app registration still need a restart.
+
 ## Fallback mailbox
 
 With `send.fallbackMailbox` set, a mail whose sending mailbox doesn't exist is sent from the fallback mailbox instead
@@ -62,8 +76,10 @@ All endpoints require a login (when enabled). `POST` requests need the header `X
 
 | Method | Path | |
 |--------|------|-|
-| GET  | `/api/mails?q=&status=&from=&to=&limit=&offset=` | Search (`from`/`to` in ms since epoch) |
+| GET  | `/api/mails?q=&status=&fallback=&retried=&from=&to=&limit=&offset=` | Search (`status` incl. `pending`; `from`/`to` in ms since epoch) |
 | GET  | `/api/mails/{id}` | Details, history, headers, text preview |
 | GET  | `/api/mails/{id}/eml` | Download the EML |
 | POST | `/api/mails/{id}/resend` | Put a failed mail back in the queue |
 | GET  | `/api/stats?days=30` | Statistics |
+| GET  | `/api/settings` | Editable settings and change history |
+| POST | `/api/settings` | Change settings, body `{"changes": {"send.retryLimit": 5}}` |
