@@ -132,6 +132,11 @@
                     "title": "Always send from this mailbox",
                     "description": "Must be a mailbox, can't be a distribution list",
                     "type": "string"
+                },
+                "fallbackMailbox": {
+                    "title": "Send from this mailbox when the sending mailbox doesn't exist",
+                    "description": "The From header is replaced by this address (the display name is kept, the original address is stored in X-SMTP2Graph-Original-From). Must be a mailbox",
+                    "type": "string"
                 }
             }
         },
@@ -318,7 +323,7 @@
                     "$ref": "#/definitions/ipaddress"
                 },
                 "publicUrl": {
-                    "title": "URL users use to open the web interface (needed for the Entra ID login redirect and the Teams app)",
+                    "title": "URL users use to open the web interface (needed for the Entra ID login redirect)",
                     "description": "Example: https://smtp2graph.contoso.com:8080",
                     "type": "string",
                     "pattern": "^https?://"
@@ -348,33 +353,6 @@
                         "sessionHours": {
                             "title": "Session lifetime in hours",
                             "description": "Default: 8",
-                            "type": "number"
-                        }
-                    }
-                }
-            }
-        },
-        "notify": {
-            "title": "Notifications about failed mails",
-            "type": "object",
-            "properties": {
-                "teams": {
-                    "title": "Teams activity feed notifications",
-                    "type": "object",
-                    "required": ["recipients"],
-                    "properties": {
-                        "recipients": {
-                            "title": "UPNs or object IDs of the users that receive a notification",
-                            "type": "array",
-                            "items": {"type": "string"}
-                        },
-                        "teamsAppId": {
-                            "title": "The id of the SMTP2Graph Teams app (a GUID you choose once)",
-                            "type": "string"
-                        },
-                        "throttleMinutes": {
-                            "title": "Minimum minutes between notifications. Failures in between are bundled",
-                            "description": "Default: 15",
                             "type": "number"
                         }
                     }

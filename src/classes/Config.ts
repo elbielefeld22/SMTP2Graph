@@ -30,6 +30,8 @@ export interface IConfig
         retryInterval?: number;
         /** Always send from this mailbox */
         forceMailbox?: string;
+        /** Send from this mailbox (with a rewritten From header) when the sending mailbox doesn't exist */
+        fallbackMailbox?: string;
     },
     receive?: {
         /** The port on which the SMTP server will listen (default: 25) */
@@ -90,17 +92,6 @@ export interface IConfig
             sessionHours?: number;
         };
     },
-    /** Notifications about failed mails */
-    notify?: {
-        teams?: {
-            /** UPNs or object IDs of the users that receive a Teams activity notification */
-            recipients: string[];
-            /** The `id` from the Teams app manifest (used to build the deep link) */
-            teamsAppId?: string;
-            /** Minimum minutes between notifications (default: 15). Failures in between are bundled */
-            throttleMinutes?: number;
-        };
-    },
     httpProxy?: {
         host: string,
         port: number,
@@ -138,7 +129,9 @@ export class Config
                 throw new InvalidConfig('Missing "appReg.tenant" property');
         }
         
-        if(this.sendRetryInterval !== undefined && this.sendRetryInterval < 1)
+        if(this.fallbackMailbox !== undefined && (typeof this.fallbackMailbox !== 'string' || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(this.fallbackMailbox)))
+            throw new InvalidConfig('"send.fallbackMailbox" should be an email address');
+        else if(this.sendRetryInterval !== undefined && this.sendRetryInterval < 1)
             throw new InvalidConfig('"retryInterval" may not be smaller than 1');
         else if(this.smtpRequireAuth && !this.smtpUsers?.length)
             throw new InvalidConfig('"requireAuth" enabled without users defined');
@@ -182,10 +175,6 @@ export class Config
             throw new InvalidConfig(`Property "web.publicUrl" is required when the web login is enabled`);
         else if(this.webPublicUrl && !/^https?:\/\/[^/]+/i.test(this.webPublicUrl))
             throw new InvalidConfig(`Property "web.publicUrl" should be an absolute http(s) URL`);
-        else if(this.#config.notify?.teams && (!Array.isArray(this.#config.notify.teams.recipients) || !this.#config.notify.teams.recipients.length))
-            throw new InvalidConfig(`Property "notify.teams.recipients" should contain at least one user`);
-        else if(this.#config.notify?.teams && !this.hasAppReg)
-            throw new InvalidConfig(`Teams notifications require "send.appReg" to be configured`);
         else if(this.#config.httpProxy && typeof this.#config.httpProxy.host !== 'string')
             throw new InvalidConfig(`Property "httpProxy.host" should be a string`);
         else if(this.#config.httpProxy && typeof this.#config.httpProxy.port !== 'number')
@@ -255,6 +244,11 @@ export class Config
     static get forceMailbox()
     {
         return this.#config.send?.forceMailbox;
+    }
+
+    static get fallbackMailbox()
+    {
+        return this.#config.send?.fallbackMailbox;
     }
 
     static get smtpPort(): number
@@ -419,17 +413,6 @@ export class Config
     static get webSessionHours(): number
     {
         return this.#config.web?.auth?.sessionHours ?? 8;
-    }
-
-    static get notifyTeams()
-    {
-        const teams = this.#config.notify?.teams;
-        if(!teams?.recipients?.length) return undefined;
-        return {
-            recipients: teams.recipients,
-            teamsAppId: teams.teamsAppId,
-            throttleMinutes: teams.throttleMinutes ?? 15,
-        };
     }
 
     static get httpProxyHost()

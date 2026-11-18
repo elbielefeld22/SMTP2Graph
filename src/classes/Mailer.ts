@@ -8,10 +8,24 @@ import { ConfidentialClientApplication } from '@azure/msal-node';
 import { Config } from './Config';
 import { UnrecoverableError } from './Constants';
 import { MsalProxy } from './MsalProxy';
+import { Readable } from 'stream';
+import { rewriteSender } from './MailRewrite';
 
 export class MailboxAccessDenied extends UnrecoverableError { }
 export class InvalidMailContent extends UnrecoverableError { }
 export class MessageSizeExceeded extends UnrecoverableError { }
+export class MailboxNotFound extends UnrecoverableError { }
+
+/** Graph error codes meaning the user doesn't exist or has no (Exchange Online) mailbox */
+const MAILBOX_NOT_FOUND_CODES = ['ErrorInvalidUser', 'MailboxNotEnabledForRESTAPI', 'MailboxNotHostedInExchangeOnline', 'ResourceNotFound', 'Request_ResourceNotFound'];
+
+export interface ISendResult
+{
+    /** Mailbox the mail was sent from */
+    mailbox: string;
+    /** Set when the fallback mailbox was used: the original (non-existing) sending mailbox */
+    fallbackFor?: string;
+}
 
 export class Mailer
 {
@@ -33,7 +47,7 @@ export class Mailer
         system: Config.httpProxyConfig?{networkClient: new MsalProxy()}:undefined, // We use our custom implementation, because the `proxyUrl` property doesn't want to work
     }):undefined;
 
-    static async sendEml(filePath: string)
+    static async sendEml(filePath: string): Promise<ISendResult>
     {
         return this.#sendSemaphore.runExclusive(async ()=>{
             // Determine the sender
@@ -49,45 +63,61 @@ export class Mailer
             const token = await this.#aquireToken();
 
             // Send the message
-            const readStream = fs.createReadStream(filePath);
             try {
-                await this.#retryableRequest({
-                    method: 'post',
-                    url: `https://graph.microsoft.com/v1.0/users/${sender}/sendMail`,
-                    data: readStream.pipe(new Base64Encode()),
-                    headers: {
-                        Authorization: `Bearer ${token}`,
-                        'Content-Type': 'text/plain',
-                        'User-Agent': `SMPT2Graph/${VERSION}`,
-                    },
-                    proxy: Config.httpProxyConfig,
-                });
-            } catch(error: any) {
-                if(isAxiosError(error) && error.response?.data)
+                await this.#post(filePath, sender, token, ()=>fs.createReadStream(filePath));
+                return {mailbox: sender} as ISendResult;
+            } catch(error) {
+                const fallback = Config.fallbackMailbox;
+                if(!(error instanceof MailboxNotFound) || !fallback || fallback.toLowerCase() === sender.toLowerCase())
+                    throw error;
+
+                // The sending mailbox doesn't exist: send from the fallback mailbox with a rewritten From header
+                await this.#post(filePath, fallback, token, ()=>rewriteSender(filePath, fallback));
+                return {mailbox: fallback, fallbackFor: sender} as ISendResult;
+            }
+        });
+    }
+
+    /**
+     * Send MIME content from a mailbox and translate Graph errors
+     * @param createContent Creates a new stream of the MIME content, called for every attempt (a stream can only be read once)
+     */
+    static async #post(filePath: string, mailbox: string, token: string, createContent: ()=>Readable)
+    {
+        try {
+            await this.#retryableRequest(createContent, {
+                method: 'post',
+                url: `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/sendMail`,
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'text/plain',
+                    'User-Agent': `SMPT2Graph/${VERSION}`,
+                },
+                proxy: Config.httpProxyConfig,
+            });
+        } catch(error: any) {
+            if(isAxiosError(error) && error.response?.data)
+            {
+                const data = error.response?.data;
+                if('error' in data && 'code' in data.error)
                 {
-                    const data = error.response?.data;
-                    if('error' in data && 'code' in data.error)
-                    {
-                        if(data.error.code === 'ErrorAccessDenied')
-                            throw new MailboxAccessDenied(`Access to mailbox "${sender}" denied`);
-                        else if(data.error.code === 'ErrorMimeContentInvalidBase64String')
-                            throw new InvalidMailContent(`Invalid content for mail "${filePath}"`);
-                        else if(data.error.code === 'ErrorMessageSizeExceeded')
-                            throw new MessageSizeExceeded(`The message exceeds the maximum supported size for mail "${filePath}"`);
-                        else
-                            throw new Error(JSON.stringify(data.error));
-                    }
+                    if(error.response.status === 404 || MAILBOX_NOT_FOUND_CODES.includes(data.error.code))
+                        throw new MailboxNotFound(`Mailbox "${mailbox}" does not exist or has no Exchange Online mailbox (${data.error.code})`);
+                    else if(data.error.code === 'ErrorAccessDenied')
+                        throw new MailboxAccessDenied(`Access to mailbox "${mailbox}" denied`);
+                    else if(data.error.code === 'ErrorMimeContentInvalidBase64String')
+                        throw new InvalidMailContent(`Invalid content for mail "${filePath}"`);
+                    else if(data.error.code === 'ErrorMessageSizeExceeded')
+                        throw new MessageSizeExceeded(`The message exceeds the maximum supported size for mail "${filePath}"`);
                     else
-                        throw data;
+                        throw new Error(JSON.stringify(data.error));
                 }
                 else
-                    throw error;
-            } finally {
-                readStream.destroy();
+                    throw data;
             }
-
-            return sender;
-        });
+            else
+                throw error;
+        }
     }
 
     /** The MSAL client of the configured app registration (undefined when not configured) */
@@ -102,8 +132,11 @@ export class Mailer
         return this.#aquireToken();
     }
 
-    /** Automatically retry a request when it's being throttled by the Graph API */
-    static async #retryableRequest<RequestData = any, ReponseData = any>(request: AxiosRequestConfig<RequestData>): Promise<AxiosResponse<RequestData, ReponseData>>
+    /**
+     * Automatically retry a request when it's being throttled by the Graph API
+     * @param createContent Creates the (MIME) content for each attempt. It's base64 encoded and sent as request body
+     */
+    static async #retryableRequest<RequestData = any, ReponseData = any>(createContent: ()=>Readable, request: AxiosRequestConfig<RequestData>): Promise<AxiosResponse<RequestData, ReponseData>>
     {
         const retryLimit = 3;
         let retryCount = 0;
@@ -114,10 +147,12 @@ export class Mailer
             const abortController = new AbortController();
             const connectTimeout = setTimeout(()=>abortController.abort(`Server did not respond within 10 seconds`), 10000);
             const overallTimeout = setTimeout(()=>abortController.abort(`Failed to send message within 120 seconds`), 120000);
+            const content = createContent(); // A fresh stream for every attempt, a stream that was (partly) sent can't be sent again
 
             try {
                 return await axios({
                     ...request,
+                    data: content.pipe(new Base64Encode()) as any,
                     signal: abortController.signal,
                     onUploadProgress: progress=>{
                         clearTimeout(connectTimeout);
@@ -128,9 +163,10 @@ export class Mailer
                     throw error;
                 else if(isAxiosError(error) && (error.response?.status === 429 || error.response?.status === 503 || error.response?.status === 504)) // We got a retryable response?
                 {
-                    const retryAfter = error.response.headers['Retry-After'];
+                    // Node delivers header names in lower case
+                    const retryAfter = error.response.headers['retry-after'];
                     if(retryAfter && !isNaN(retryAfter)) // We got throttled
-                        wait = parseInt(retryAfter) * 1000;
+                        wait = Math.min(parseInt(retryAfter) * 1000, 60000);
                     else
                         wait *= 2;
 
@@ -145,6 +181,7 @@ export class Mailer
             } finally {
                 clearTimeout(connectTimeout);
                 clearTimeout(overallTimeout);
+                content.destroy();
             }
         };
 

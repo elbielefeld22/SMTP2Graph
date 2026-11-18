@@ -9,12 +9,9 @@ import { Config } from './Config';
 import { Archive, MailStatus } from './Archive';
 import { MailQueue } from './MailQueue';
 import { Mailer } from './Mailer';
-import { Notifier } from './Notifier';
 import { readHeaders, decodeHeader } from './MailHeaders';
-import { TeamsApp } from './TeamsApp';
 import { prefixedLog } from './Logger';
 import indexHtml from '../web/index.html';
-import teamsHtml from '../web/teams.html';
 
 const log = prefixedLog('WebServer');
 
@@ -39,6 +36,8 @@ interface IPendingLogin
 }
 
 const SESSION_COOKIE = 'smtp2graph_session';
+/** Set after a logout or a denied login: the next login shows Microsoft's account picker instead of signing in silently (SSO) */
+const SELECT_ACCOUNT_COOKIE = 'smtp2graph_select_account';
 const CSRF_HEADER = 'x-smtp2graph';
 
 class HttpError extends Error
@@ -119,9 +118,7 @@ export class WebServer
         res.setHeader('Cache-Control', 'no-store');
 
         // --- Public routes ---
-        if(method === 'GET' && p === '/teams') // Landing page for the Teams personal tab, contains no data
-            return this.#html(res, teamsHtml.replace(/__PUBLIC_URL__/g, this.#escape(Config.webPublicUrl || '/')), true);
-        if(method === 'GET' && p === '/auth/login') return this.#login(res, url);
+        if(method === 'GET' && p === '/auth/login') return this.#login(req, res, url);
         if(method === 'GET' && p === '/auth/callback') return this.#callback(res, url);
         if(method === 'GET' && p === '/auth/logout') return this.#logout(req, res);
         if(method === 'GET' && p === '/favicon.ico') { res.statusCode = 204; return res.end(); }
@@ -146,8 +143,7 @@ export class WebServer
 
         if(method === 'GET' && p === '/api/me')
             return this.#json(res, 200, {user, authEnabled: Config.webAuthEnabled, version: VERSION, mode: Config.mode,
-                retentionDays: Config.archiveRetentionDays, storeContent: Config.archiveStoreContent,
-                notify: {enabled: Notifier.enabled, recipients: Config.notifyTeams?.recipients ?? [], teamsAppProblems: TeamsApp.problems()}});
+                retentionDays: Config.archiveRetentionDays, storeContent: Config.archiveStoreContent});
 
         if(method === 'GET' && p === '/api/mails')
         {
@@ -156,6 +152,7 @@ export class WebServer
             return this.#json(res, 200, Archive.search({
                 q: url.searchParams.get('q')?.trim() || undefined,
                 status: status as MailStatus|undefined,
+                fallback: url.searchParams.get('fallback') === '1',
                 from: this.#num(url.searchParams.get('from')),
                 to: this.#num(url.searchParams.get('to')),
                 limit: this.#num(url.searchParams.get('limit')),
@@ -194,22 +191,6 @@ export class WebServer
                 if(error) throw new HttpError(409, error);
                 return this.#json(res, 200, {ok: true});
             }
-        }
-
-        if(method === 'GET' && p === '/api/teams-app.zip')
-        {
-            const problems = TeamsApp.problems();
-            if(problems.length) throw new HttpError(400, `Cannot build the Teams app: ${problems.join(', ')}`);
-            res.setHeader('Content-Type', 'application/zip');
-            res.setHeader('Content-Disposition', 'attachment; filename="smtp2graph-teams-app.zip"');
-            return res.end(TeamsApp.package());
-        }
-
-        if(method === 'POST' && p === '/api/notify/test')
-        {
-            if(!Notifier.enabled) throw new HttpError(400, 'Teams notifications are not configured ("notify.teams")');
-            log('info', `User "${user.upn}" sent a test notification`);
-            return this.#json(res, 200, {results: await Notifier.sendTest(user.name || user.upn)});
         }
 
         throw new HttpError(404, 'Not found');
@@ -259,7 +240,7 @@ export class WebServer
         return session.user;
     }
 
-    async #login(res: http.ServerResponse, url: URL)
+    async #login(req: http.IncomingMessage, res: http.ServerResponse, url: URL)
     {
         if(!Config.webAuthEnabled) return this.#redirect(res, '/');
         const client = Mailer.msalClient;
@@ -272,6 +253,9 @@ export class WebServer
 
         this.#pendingLogins.set(state, {verifier, returnTo, expires: Date.now() + 10*60*1000});
 
+        // After a logout/denied login, SSO would silently sign in the same account again. Let the user pick an account instead
+        const selectAccount = url.searchParams.get('prompt') === 'select_account' || this.#cookies(req)[SELECT_ACCOUNT_COOKIE] === '1';
+
         const authUrl = await client.getAuthCodeUrl({
             scopes: ['openid', 'profile'],
             redirectUri: this.#redirectUri,
@@ -279,6 +263,7 @@ export class WebServer
             codeChallenge: challenge,
             codeChallengeMethod: 'S256',
             responseMode: 'query' as any,
+            prompt: selectAccount?'select_account':undefined,
         });
         this.#redirect(res, authUrl);
     }
@@ -289,7 +274,9 @@ export class WebServer
         if(!Config.webAuthEnabled || !client) return this.#redirect(res, '/');
 
         if(url.searchParams.get('error'))
-            return this.#html(res, this.#messagePage('Anmeldung fehlgeschlagen', url.searchParams.get('error_description') || url.searchParams.get('error')!), false, 401);
+            return this.#html(res, this.#messagePage('Anmeldung fehlgeschlagen', url.searchParams.get('error_description') || url.searchParams.get('error')!, [
+                {href: '/auth/login?prompt=select_account', text: 'Erneut anmelden'},
+            ]), 401);
 
         const state = url.searchParams.get('state') || '';
         const pending = this.#pendingLogins.get(state);
@@ -316,13 +303,20 @@ export class WebServer
         if(!await this.#isAllowed(claims))
         {
             log('warn', `User "${user.upn}" tried to log in, but is not a member of an allowed group`);
-            return this.#html(res, this.#messagePage('Kein Zugriff', `Das Konto ${user.upn} ist nicht Mitglied einer berechtigten Gruppe.`), false, 403);
+            res.setHeader('Set-Cookie', this.#cookie(SELECT_ACCOUNT_COOKIE, '1', 24*60*60));
+            return this.#html(res, this.#messagePage('Kein Zugriff', `Das Konto ${user.upn} ist nicht Mitglied einer berechtigten Gruppe.`, [
+                {href: '/auth/login?prompt=select_account', text: 'Mit anderem Konto anmelden'},
+                {href: this.#microsoftLogoutUrl, text: 'Bei Microsoft abmelden', hint: 'meldet Sie in diesem Browser von allen Microsoft-365-Diensten ab'},
+            ]), 403);
         }
 
         const sid = randomBytes(32).toString('base64url');
         const maxAge = Config.webSessionHours*60*60;
         this.#sessions.set(sid, {user, expires: Date.now() + maxAge*1000});
-        res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${this.#secureCookies?'; Secure':''}`);
+        res.setHeader('Set-Cookie', [
+            this.#cookie(SESSION_COOKIE, sid, maxAge),
+            this.#cookie(SELECT_ACCOUNT_COOKIE, '', 0),
+        ]);
         log('info', `User "${user.upn}" logged in`);
         this.#redirect(res, pending.returnTo);
     }
@@ -353,8 +347,25 @@ export class WebServer
     {
         const sid = this.#cookies(req)[SESSION_COOKIE];
         if(sid) this.#sessions.delete(sid);
-        res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${this.#secureCookies?'; Secure':''}`);
-        this.#html(res, this.#messagePage('Abgemeldet', 'Sie wurden abgemeldet.', '/auth/login', 'Erneut anmelden'));
+        res.setHeader('Set-Cookie', [
+            this.#cookie(SESSION_COOKIE, '', 0),
+            this.#cookie(SELECT_ACCOUNT_COOKIE, '1', 24*60*60),
+        ]);
+        this.#html(res, this.#messagePage('Abgemeldet', 'Sie wurden von SMTP2Graph abgemeldet.', [
+            {href: '/auth/login?prompt=select_account', text: 'Erneut anmelden'},
+            {href: this.#microsoftLogoutUrl, text: 'Auch bei Microsoft abmelden', hint: 'meldet Sie in diesem Browser von allen Microsoft-365-Diensten ab'},
+        ]));
+    }
+
+    /** Entra ID sign-out page (ends the Microsoft session in this browser) */
+    get #microsoftLogoutUrl()
+    {
+        return `${Config.msalAuthority}/oauth2/v2.0/logout`;
+    }
+
+    #cookie(name: string, value: string, maxAge: number)
+    {
+        return `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${this.#secureCookies?'; Secure':''}`;
     }
 
     // ---------------- Helpers ----------------
@@ -395,7 +406,7 @@ export class WebServer
         res.end(JSON.stringify(data));
     }
 
-    #html(res: http.ServerResponse, html: string, allowTeamsFrame = false, status = 200)
+    #html(res: http.ServerResponse, html: string, status = 200)
     {
         const nonce = randomBytes(16).toString('base64');
         res.statusCode = status;
@@ -405,15 +416,17 @@ export class WebServer
             `script-src 'nonce-${nonce}'`,
             `style-src 'nonce-${nonce}'`,
             `img-src 'self' data:`,
-            `frame-ancestors ${allowTeamsFrame?'https://teams.microsoft.com https://*.teams.microsoft.com https://*.cloud.microsoft':`'none'`}`,
+            `frame-ancestors 'none'`,
         ].join('; '));
         res.end(html.replace(/__NONCE__/g, nonce));
     }
 
-    #messagePage(title: string, message: string, link = '/', linkText = 'Zur Startseite')
+    #messagePage(title: string, message: string, links: {href: string, text: string, hint?: string}[] = [])
     {
+        const linkHtml = links.map(l=>`<li><a href="${this.#escape(l.href)}">${this.#escape(l.text)}</a>${l.hint?` <span class="hint">(${this.#escape(l.hint)})</span>`:''}</li>`).join('');
         return `<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>SMTP2Graph</title>
-<style nonce="__NONCE__">body{font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#1f2328}a{color:#0f6cbd}</style></head>
-<body><h1>${this.#escape(title)}</h1><p>${this.#escape(message)}</p><p><a href="${this.#escape(link)}">${this.#escape(linkText)}</a></p></body></html>`;
+<style nonce="__NONCE__">body{font-family:system-ui,sans-serif;max-width:34rem;margin:15vh auto;padding:0 1rem;color:#1f2328;background:#fff}a{color:#0f6cbd}ul{padding-left:1.2rem}li{margin:.4rem 0}.hint{color:#656d76;font-size:.9em}
+@media (prefers-color-scheme: dark){body{background:#0d1117;color:#e6edf3}a{color:#4493f8}.hint{color:#8d96a0}}</style></head>
+<body><h1>${this.#escape(title)}</h1><p>${this.#escape(message)}</p>${linkHtml?`<ul>${linkHtml}</ul>`:''}</body></html>`;
     }
 }

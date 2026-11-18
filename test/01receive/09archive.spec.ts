@@ -66,7 +66,8 @@ describe('Receive: Archive and web interface', async function(){
     });
 
     it('POST requests without CSRF header are rejected', async function(){
-        const res = await fetch(`${base}/api/notify/test`, {method: 'POST'});
+        const list = await (await fetch(`${base}/api/mails?limit=1`)).json();
+        const res = await fetch(`${base}/api/mails/${encodeURIComponent(list.items[0].id)}/resend`, {method: 'POST'});
         expect(res.status).to.equal(403);
     });
 
@@ -125,15 +126,26 @@ describe('Receive: Web interface login', async function(){
         expect(location.searchParams.get('redirect_uri')).to.equal(`${base}/auth/callback`);
     });
 
+    it('Login normally uses SSO (no account picker)', async function(){
+        const res = await fetch(`${base}/auth/login`, {redirect: 'manual'});
+        expect(new URL(res.headers.get('location')!).searchParams.get('prompt')).to.be.null;
+    });
+
+    it('Logout ends the session and the next login shows the account picker', async function(){
+        const res = await fetch(`${base}/auth/logout`, {redirect: 'manual'});
+        expect(res.status).to.equal(200);
+        const cookies = res.headers.getSetCookie();
+        expect(cookies.some(c=>/^smtp2graph_session=;.*Max-Age=0/.test(c)), 'Session cookie not cleared').to.be.true;
+        const marker = cookies.find(c=>c.startsWith('smtp2graph_select_account=1'));
+        expect(marker, 'Account picker marker not set').to.not.be.undefined;
+
+        const login = await fetch(`${base}/auth/login`, {redirect: 'manual', headers: {cookie: marker!.split(';')[0]}});
+        expect(new URL(login.headers.get('location')!).searchParams.get('prompt')).to.equal('select_account');
+    });
+
     it('Callback with unknown state does not log in', async function(){
         const res = await fetch(`${base}/auth/callback?code=x&state=unknown`, {redirect: 'manual'});
         expect(res.status).to.equal(302);
         expect(res.headers.get('set-cookie')).to.be.null;
-    });
-
-    it('Teams landing page is public and frameable by Teams', async function(){
-        const res = await fetch(`${base}/teams`);
-        expect(res.status).to.equal(200);
-        expect(res.headers.get('content-security-policy')).to.contain('https://teams.microsoft.com');
     });
 });

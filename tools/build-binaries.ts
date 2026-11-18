@@ -7,8 +7,6 @@ import { Arch, downloadBinary, findVersion, Platform, Version } from './nodejs-d
 const distNodeVersion = '24';
 const distributions: {platform: Platform, arch: Arch}[] = [
     {platform: 'win', arch: 'x64'},
-    {platform: 'linux', arch: 'x64'},
-    {platform: 'linux', arch: 'arm64'},
 ];
 const outDir = 'dist';
 const binNamePrefix = 'smtp2graph';
@@ -68,7 +66,7 @@ const binNamePrefix = 'smtp2graph';
                         FileDescription: packageJson.description,
                         ProductName: 'SMTP2Graph',
                         OriginalFilename: path.basename(targetFile),
-                        LegalCopyright: `Copyright SMTP2Graph contributors. ${packageJson.license} license`,
+                        LegalCopyright: `Copyright SMTP2Graph contributors, modifications Copyright Leap IT. ${packageJson.license} license`,
                     },
                     'file-version': packageJson.version,
                     'product-version': packageJson.version,

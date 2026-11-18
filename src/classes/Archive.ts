@@ -4,6 +4,7 @@ import type { DatabaseSync, StatementSync } from 'node:sqlite';
 import { Config } from './Config';
 import { prefixedLog } from './Logger';
 import { readHeaders, getHeader, decodeHeader, formatAddressHeader } from './MailHeaders';
+import type { ISendResult } from './Mailer';
 
 const log = prefixedLog('Archive');
 
@@ -43,6 +44,8 @@ export interface IMailRecord
     lastAttemptAt: number|null;
     sentAt: number|null;
     senderMailbox: string|null;
+    /** Set when the fallback mailbox was used: the original sending mailbox that doesn't exist */
+    fallbackFor: string|null;
     location: MailLocation;
     resentCount: number;
 }
@@ -50,7 +53,7 @@ export interface IMailRecord
 export interface IMailEvent
 {
     at: number;
-    type: 'received'|'attempt'|'sent'|'error'|'failed'|'resend'|'notified';
+    type: 'received'|'attempt'|'sent'|'error'|'failed'|'resend'|'fallback';
     message: string|null;
 }
 
@@ -68,6 +71,8 @@ export interface ISearchOptions
 {
     q?: string;
     status?: MailStatus;
+    /** Only mails sent from the fallback mailbox */
+    fallback?: boolean;
     from?: number;
     to?: number;
     limit?: number;
@@ -144,6 +149,10 @@ export class Archive
             );
             CREATE INDEX IF NOT EXISTS idx_events_mail ON events(mail_id);
         `);
+
+        // Migrations for databases created by older versions
+        const columns = (db.prepare('PRAGMA table_info(mails)').all() as {name: string}[]).map(c=>c.name);
+        if(!columns.includes('fallback_for')) db.exec('ALTER TABLE mails ADD COLUMN fallback_for TEXT');
         this.#db = db;
         this.#stmts = {};
 
@@ -255,12 +264,14 @@ export class Archive
         });
     }
 
-    static markSent(id: string, senderMailbox: string|undefined, location: MailLocation)
+    static markSent(id: string, result: ISendResult, location: MailLocation)
     {
         this.#safe('mark sent', ()=>{
-            this.#stmt(`UPDATE mails SET status = 'sent', sent_at = ?, sender_mailbox = ?, last_error = NULL, location = ? WHERE id = ?`)
-                .run(Date.now(), senderMailbox ?? null, location, id);
-            this.#event(id, 'sent', senderMailbox?`Accepted by Graph (mailbox ${senderMailbox})`:'Accepted by Graph');
+            this.#stmt(`UPDATE mails SET status = 'sent', sent_at = ?, sender_mailbox = ?, fallback_for = ?, last_error = NULL, location = ? WHERE id = ?`)
+                .run(Date.now(), result.mailbox, result.fallbackFor ?? null, location, id);
+            if(result.fallbackFor)
+                this.#event(id, 'fallback', `Mailbox ${result.fallbackFor} does not exist, sent from fallback mailbox ${result.mailbox} (From header replaced)`);
+            this.#event(id, 'sent', `Accepted by Graph (mailbox ${result.mailbox})`);
         });
     }
 
@@ -324,11 +335,12 @@ export class Archive
             if(opts.q)
             {
                 const like = `%${opts.q.replace(/[\\%_]/g, m=>'\\'+m)}%`;
-                const cols = ['id','subject','header_from','header_to','header_cc','envelope_from','envelope_to','remote_ip','client_hostname','smtp_user','message_id','sender_mailbox','last_error'];
+                const cols = ['id','subject','header_from','header_to','header_cc','envelope_from','envelope_to','remote_ip','client_hostname','smtp_user','message_id','sender_mailbox','fallback_for','last_error'];
                 where.push('(' + cols.map(c=>`${c} LIKE ? ESCAPE '\\'`).join(' OR ') + ')');
                 params.push(...cols.map(()=>like));
             }
             if(opts.status) { where.push('status = ?'); params.push(opts.status); }
+            if(opts.fallback) where.push('fallback_for IS NOT NULL');
             if(opts.from) { where.push('received_at >= ?'); params.push(opts.from); }
             if(opts.to) { where.push('received_at <= ?'); params.push(opts.to); }
 
@@ -362,6 +374,7 @@ export class Archive
             const totals = this.#db!.prepare(`
                 SELECT COUNT(*) AS total, SUM(status = 'sent') AS sent, SUM(status = 'failed') AS failed,
                     SUM(status IN ('queued','retrying')) AS pending, SUM(attempts > 1) AS retried,
+                    SUM(fallback_for IS NOT NULL) AS fallback,
                     COALESCE(SUM(size), 0) AS bytes,
                     AVG(CASE WHEN sent_at IS NOT NULL THEN sent_at - received_at END) AS avgDeliveryMs
                 FROM mails WHERE received_at >= ?`).get(s);
@@ -465,6 +478,7 @@ export class Archive
             lastAttemptAt: row.last_attempt_at,
             sentAt: row.sent_at,
             senderMailbox: row.sender_mailbox,
+            fallbackFor: row.fallback_for ?? null,
             location: row.location,
             resentCount: row.resent_count,
         };

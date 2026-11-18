@@ -2,12 +2,11 @@ import fs from 'fs';
 import path from 'path';
 import chokidar from 'chokidar';
 import { Mutex } from 'async-mutex';
-import { Mailer } from './Mailer';
+import { Mailer, ISendResult } from './Mailer';
 import { prefixedLog } from './Logger';
 import { Config } from './Config';
 import { UnrecoverableError } from './Constants';
 import { Archive, IReceiveMeta } from './Archive';
-import { Notifier } from './Notifier';
 
 const log = prefixedLog('MailQueue');
 
@@ -69,8 +68,10 @@ export class MailQueue
         Archive.markAttempt(filename);
 
         try {
-            const sender = await Mailer.sendEml(filePath);
-            await this.#onSent(filePath, sender);
+            const result = await Mailer.sendEml(filePath);
+            if(result.fallbackFor)
+                log('warn', `Mailbox "${result.fallbackFor}" does not exist, sent "${filename}" from fallback mailbox "${result.mailbox}"`);
+            await this.#onSent(filePath, result);
             this.#removeFromRetryQueue(filename);
         } catch(error) {
             log('error', `Failed to send message "${filename}"`, {error, filename});
@@ -84,7 +85,7 @@ export class MailQueue
     }
 
     /** Archive or delete a successfully sent mail */
-    async #onSent(filePath: string, sender: string|undefined)
+    async #onSent(filePath: string, result: ISendResult)
     {
         const filename = path.basename(filePath);
 
@@ -92,7 +93,7 @@ export class MailQueue
         {
             try {
                 await renameWithRetry(filePath, path.join(this.#archivePath, filename));
-                Archive.markSent(filename, sender, 'archive');
+                Archive.markSent(filename, result, 'archive');
                 return;
             } catch(error) {
                 log('error', `Error moving "${filename}" to the archive`, {error, filename});
@@ -101,7 +102,7 @@ export class MailQueue
 
         // Never leave a sent mail in the queue, it would be sent again after a restart
         this.remove(filePath);
-        Archive.markSent(filename, sender, 'deleted');
+        Archive.markSent(filename, result, 'deleted');
     }
 
     #moveToFailed(filename: string, errorMsg: string)
@@ -115,10 +116,7 @@ export class MailQueue
                 log('error', `Error moving file "${filename}" from queue to failed dir`, {error, filename});
                 return 'queue' as const;
             })
-            .then(location=>{
-                Archive.markFailed(filename, errorMsg, location);
-                Notifier.mailFailed(filename, errorMsg);
-            });
+            .then(location=>Archive.markFailed(filename, errorMsg, location));
     }
 
     #addToRetryQueue(filename: string, errorMsg: string)

@@ -25,6 +25,9 @@ send:
   retryInterval: 10 # Default: 5
   # Optional: Force SMTP2Graph to always send from this mailbox. This mailbox must have permission to send as or on behalf of the from address
   forceMailbox: smtp2graph@example.com
+  # Optional: When the sending mailbox doesn't exist (Graph: user/mailbox not found), send from this mailbox instead.
+  # The From header is replaced by this address, the display name is kept
+  fallbackMailbox: noreply@example.com
 
 # Optional: SMTP server config
 receive:
@@ -105,16 +108,6 @@ web:
     # Optional: Session lifetime in hours (default: 8)
     sessionHours: 8
 
-# Optional: Notify users in Teams (activity feed) when mails could not be sent
-notify:
-  teams:
-    # UPNs or object IDs of the users to notify
-    recipients:
-      - admin@example.com
-    # A GUID you generate once, used as id of the SMTP2Graph Teams app (download the app in the web interface)
-    teamsAppId: 89abcdef-0123-4567-89ab-cdef01234567
-    # Optional: Minimum minutes between notifications, failures in between are bundled (default: 15)
-    throttleMinutes: 15
 
 # Optional: HTTP proxy to use for outgoing communication
 httpProxy: 

@@ -1,4 +1,4 @@
-# Archive, web interface and Teams notifications
+# Archive and web interface
 
 These features are optional and only active when the corresponding sections exist in `config.yml`
 (see `config.example.yml`). Requires Node.js 24 (bundled in the binaries).
@@ -6,8 +6,7 @@ These features are optional and only active when the corresponding sections exis
 | Section   | What it does |
 |-----------|--------------|
 | `archive` | Stores every received mail (EML) plus metadata (SMTP session, envelope, headers, Graph status, history) in `mailroot/archive` and `mailroot/smtp2graph.db` (SQLite). Mails and metadata older than `retentionDays` (default 30) are deleted hourly. |
-| `web`     | Web interface: search, mail details (metadata, history, headers, text, attachments), EML download, resend of failed mails, statistics, Teams test notification. Requires `archive`. |
-| `notify`  | Teams activity feed notification to the configured users when a mail fails permanently (moved to `mailroot/failed`). Failures within `throttleMinutes` are bundled. |
+| `web`     | Web interface: search, mail details (metadata, history, headers, text, attachments), EML download, resend of failed mails, statistics. Requires `archive`. |
 
 > **Data protection:** the archive contains complete mails including personal data.
 > Agree on the retention period, `storeContent` and who may access the web interface with your data protection officer.
@@ -24,6 +23,20 @@ These features are optional and only active when the corresponding sections exis
 Unrecoverable errors (e.g. access denied to the mailbox) and mails that hit the retry limit are moved to `mailroot/failed`.
 With `retryLimit: 0` failed mails go to `mailroot/failed` immediately.
 
+## Fallback mailbox
+
+With `send.fallbackMailbox` set, a mail whose sending mailbox doesn't exist is sent from the fallback mailbox instead
+(immediately, without waiting for a retry). This applies to the Graph errors HTTP 404, `ErrorInvalidUser`,
+`MailboxNotEnabledForRESTAPI`, `MailboxNotHostedInExchangeOnline` and `ResourceNotFound`. Other errors (access denied,
+message too large, …) don't use the fallback.
+
+- The **From** header is replaced by the fallback address, the display name is kept. A `Sender` header is removed and the
+  original From is stored in the header `X-SMTP2Graph-Original-From`. Exchange wouldn't allow sending as a non-existing address.
+- The archived EML stays unchanged (original sender). The history shows the fallback, the list marks the mail with **Ersatz**,
+  there's a filter "Ersatzpostfach" and a counter in the statistics.
+- The app registration needs `Mail.Send` for the fallback mailbox (check an Exchange application access policy, if you use one).
+- Without `fallbackMailbox` such mails fail immediately (no retries, it wouldn't help) and can be resent from the web interface.
+
 ## Web interface login (Entra ID)
 
 The login uses the existing app registration (`send.appReg`) with the authorization code flow (PKCE).
@@ -37,22 +50,6 @@ The login uses the existing app registration (`send.appReg`) with the authorizat
    membership with the Graph API, which requires the application permission **`GroupMember.Read.All`** (admin consent).
 
 Sessions are kept in memory: after a restart users have to log in again.
-
-## Teams notifications
-
-Microsoft Graph doesn't allow apps to post chat messages, so SMTP2Graph uses
-[activity feed notifications](https://learn.microsoft.com/graph/teams-send-activityfeednotifications)
-(the bell in Teams). They require a small Teams app that is linked to the app registration.
-
-1. Add the application permission **`TeamsActivity.Send`** to the app registration and grant admin consent.
-2. Generate a GUID once (e.g. `New-Guid` in PowerShell) and set it as `notify.teams.teamsAppId`.
-3. Make sure `web.publicUrl` is an `https://` URL (required by Teams for the personal tab).
-4. Open the web interface → **Teams-App** to download `smtp2graph-teams-app.zip`.
-5. Teams admin center → *Teams apps → Manage apps → Upload new app*, then install it for the recipients with an
-   *app setup policy* (Teams apps → Setup policies → Installed apps). The notification fails for users that don't have the app installed.
-6. Use **Teams-Benachrichtigung testen** in the web interface to check the setup. The result per recipient is shown.
-
-Clicking a notification opens the SMTP2Graph tab in Teams, which links to the failed mails in the web interface.
 
 ## Running `receive` and `send` separately
 
@@ -70,5 +67,3 @@ All endpoints require a login (when enabled). `POST` requests need the header `X
 | GET  | `/api/mails/{id}/eml` | Download the EML |
 | POST | `/api/mails/{id}/resend` | Put a failed mail back in the queue |
 | GET  | `/api/stats?days=30` | Statistics |
-| POST | `/api/notify/test` | Send a test notification |
-| GET  | `/api/teams-app.zip` | Teams app package |

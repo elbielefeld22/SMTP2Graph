@@ -80,25 +80,10 @@ jobs:
       binaryName: smtp2graph-win-x64.exe
       platform: windows-latest
 
-  test-linux-x64:
-    needs: [ build ]
-    uses: ./.github/workflows/test-binary.yml
-    with:
-      binaryName: smtp2graph-linux-x64
-      platform: ubuntu-latest
-
-  test-linux-arm64:
-    needs: [ build ]
-    uses: ./.github/workflows/test-binary.yml
-    with:
-      binaryName: smtp2graph-linux-arm64
-      platform: ubuntu-latest
-      useArch: arm64
-
   commit:
     if: ${{ inputs.version && inputs.commit }}
     runs-on: ubuntu-latest
-    needs: [test-win-x64, test-linux-x64, test-linux-arm64]
+    needs: [test-win-x64]
 
     permissions:
       contents: write

@@ -60,6 +60,8 @@ td.trunc { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-sp
 .badge.failed { background: var(--err-bg); color: var(--err); }
 .badge.retrying { background: var(--warn-bg); color: var(--warn); }
 .badge.queued { background: var(--info-bg); color: var(--info); }
+.badge.fallback { background: var(--warn-bg); color: var(--warn); margin-left: 4px; }
+.filters label.check { color: var(--text); font-size: 13px; }
 .pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding: 10px 12px; border-top: 1px solid var(--border); color: var(--muted); }
 .empty { padding: 40px; text-align: center; color: var(--muted); }
 /* Detail drawer */
@@ -130,8 +132,6 @@ details summary { cursor: pointer; color: var(--muted); }
         <button data-tab="stats">Übersicht</button>
     </nav>
     <div class="spacer"></div>
-    <a class="btn hidden" id="teamsApp" href="/api/teams-app.zip" title="Teams-App-Paket für das Teams Admin Center herunterladen">Teams-App</a>
-    <button class="btn" id="notifyTest" title="Teams-Testbenachrichtigung an alle konfigurierten Empfänger senden">Teams-Benachrichtigung testen</button>
     <span class="user" id="user"></span>
     <a href="/auth/logout" id="logout" class="hidden">Abmelden</a>
 </header>
@@ -148,6 +148,7 @@ details summary { cursor: pointer; color: var(--muted); }
                     <option value="retrying">Wird wiederholt</option>
                     <option value="queued">In Warteschlange</option>
                 </select>
+                <label class="check" title="Nur Mails, die über das Ersatzpostfach gesendet wurden"><input type="checkbox" id="fallback"> Ersatzpostfach</label>
                 <label>von <input type="date" id="from"></label>
                 <label>bis <input type="date" id="to"></label>
                 <button class="btn primary" type="submit">Suchen</button>
@@ -204,7 +205,7 @@ details summary { cursor: pointer; color: var(--muted); }
 const $ = id => document.getElementById(id);
 const PAGE_SIZE = 50;
 const STATUS_LABEL = {sent: 'Gesendet', failed: 'Fehlgeschlagen', retrying: 'Wird wiederholt', queued: 'In Warteschlange'};
-const EVENT_LABEL = {received: 'Empfangen', attempt: 'Versuch', sent: 'Gesendet', error: 'Fehler', failed: 'Endgültig fehlgeschlagen', resend: 'Erneut senden', notified: 'Benachrichtigt'};
+const EVENT_LABEL = {received: 'Empfangen', attempt: 'Versuch', sent: 'Gesendet', error: 'Fehler', failed: 'Endgültig fehlgeschlagen', resend: 'Erneut senden', fallback: 'Ersatzpostfach'};
 let offset = 0, total = 0, me = null;
 
 /** Create an element. Text is always set via textContent, so data can't inject HTML */
@@ -268,7 +269,7 @@ function dayEnd(v) { return v ? new Date(v + 'T23:59:59.999').getTime() : ''; }
 
 async function loadMails() {
     const params = new URLSearchParams({
-        q: $('q').value.trim(), status: $('status').value,
+        q: $('q').value.trim(), status: $('status').value, fallback: $('fallback').checked ? '1' : '',
         from: dayStart($('from').value), to: dayEnd($('to').value),
         limit: PAGE_SIZE, offset,
     });
@@ -279,7 +280,7 @@ async function loadMails() {
         const rows = $('rows');
         rows.replaceChildren(...data.items.map(m => h('tr', {onclick: () => openMail(m.id)},
             h('td', {class: 'nowrap num'}, fmtDate(m.receivedAt)),
-            h('td', null, badge(m.status)),
+            h('td', {class: 'nowrap'}, badge(m.status), m.fallbackFor ? h('span', {class: 'badge fallback', title: 'Gesendet über Ersatzpostfach ' + m.senderMailbox + ', weil ' + m.fallbackFor + ' nicht existiert'}, 'Ersatz') : null),
             h('td', {class: 'trunc', title: m.headerFrom || ''}, m.envelopeFrom || m.headerFrom || '–'),
             h('td', {class: 'trunc', title: m.envelopeTo || ''}, m.envelopeTo || m.headerTo || '–'),
             h('td', {class: 'trunc', title: m.subject || ''}, m.subject || '(kein Betreff)'),
@@ -295,6 +296,7 @@ async function loadMails() {
 
 $('filters').addEventListener('submit', e => { e.preventDefault(); offset = 0; loadMails(); });
 $('status').addEventListener('change', () => { offset = 0; loadMails(); });
+$('fallback').addEventListener('change', () => { offset = 0; loadMails(); });
 $('reset').addEventListener('click', () => { $('filters').reset(); offset = 0; loadMails(); });
 $('prev').addEventListener('click', () => { offset = Math.max(0, offset - PAGE_SIZE); loadMails(); });
 $('next').addEventListener('click', () => { offset += PAGE_SIZE; loadMails(); });
@@ -349,7 +351,7 @@ async function openMail(id) {
         ['Von', m.headerFrom || '–'],
         ['An', m.headerTo || '–'],
         ['Cc', m.headerCc || '–'],
-        ['Sende-Postfach', m.senderMailbox || '–'],
+        ['Sende-Postfach', m.senderMailbox ? m.senderMailbox + (m.fallbackFor ? ` (Ersatzpostfach, ${m.fallbackFor} existiert nicht)` : '') : '–'],
         ['Message-ID', m.messageId || '–'],
         ['Größe', fmtSize(m.size)],
         ['Datei', m.id + ' (' + (d.fileAvailable ? m.location : 'nicht mehr vorhanden') + ')'],
@@ -406,6 +408,7 @@ async function loadStats() {
         ['Ausstehend', fmtNum(t.pending)],
         ['Erfolgsquote', done ? (100 * t.sent / done).toFixed(1).replace('.', ',') + ' %' : '–'],
         ['Mit Wiederholung', fmtNum(t.retried)],
+        ['Über Ersatzpostfach', fmtNum(t.fallback)],
         ['Ø Zustellzeit', fmtDuration(t.avgDeliveryMs)],
         ['Datenvolumen', fmtSize(t.bytes)],
     ];
@@ -479,28 +482,12 @@ function drawChart(perDay) {
 let resizeTimer;
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (!$('tab-stats').classList.contains('hidden')) loadStats(); }, 200); });
 
-// ---------------- Teams notification test ----------------
-$('notifyTest').addEventListener('click', async () => {
-    const btn = $('notifyTest');
-    if (!confirm('Testbenachrichtigung an folgende Empfänger senden?\n\n' + me.notify.recipients.join('\n'))) return;
-    btn.disabled = true;
-    try {
-        const r = await api('/api/notify/test', {method: 'POST'});
-        const ok = r.results.filter(x => x.ok).length;
-        const lines = r.results.map(x => (x.ok ? '✓ ' : '✗ ') + x.recipient + (x.error ? ' – ' + x.error : ''));
-        toast(`Testbenachrichtigung: ${ok}/${r.results.length} erfolgreich\n` + lines.join('\n'), ok < r.results.length);
-    } catch (e) { toast('Test fehlgeschlagen: ' + e.message, true); }
-    finally { btn.disabled = false; }
-});
-
 // ---------------- Init ----------------
 (async () => {
     try {
         me = await api('/api/me');
         $('user').textContent = me.user.name || me.user.upn;
         $('logout').classList.toggle('hidden', !me.authEnabled);
-        $('notifyTest').classList.toggle('hidden', !me.notify.enabled);
-        $('teamsApp').classList.toggle('hidden', !me.notify.enabled || me.notify.teamsAppProblems.length > 0);
     } catch (e) { toast(e.message, true); }
 
     const hash = new URLSearchParams(location.hash.substring(1));

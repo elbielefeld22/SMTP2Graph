@@ -10,7 +10,8 @@
     "build-binaries": "ts-node ./tools/build-binaries.ts",
     "test": "mocha test/**/*.spec.ts",
     "test:receive": "mocha test/01receive/**/*.spec.ts",
-    "test:send": "mocha test/02send/**/*.spec.ts"
+    "test:send": "mocha test/02send/**/*.spec.ts",
+    "test:unit": "mocha test/03unit/**/*.spec.ts"
   },
   "repository": {
     "type": "git",
